@@ -70,3 +70,9 @@ ui_tiers.svg
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# User config (see rope/qt/paths.py)
+presets/
+user.qss
+data.json.tmp
+outputs/

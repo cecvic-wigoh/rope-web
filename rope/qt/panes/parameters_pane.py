@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -31,9 +32,11 @@ from PySide6.QtWidgets import (
 
 import os
 
-from rope.Models import MODEL_INVENTORY, MODEL_INVENTORY_DETAILS
+from rope.Models import DEFAULT_MODELS_FOLDER, MODEL_INVENTORY, MODEL_INVENTORY_DETAILS
 from rope.qt.parameters import (
     PARAMETER_BY_NAME,
+    SECTIONS,
+    SETTINGS_SECTIONS,
     Parameter,
     parameters_by_kind,
 )
@@ -44,59 +47,6 @@ from rope.qt.widgets.text_entry import TextEntry
 from rope.qt.widgets.text_selection import TextSelection
 
 
-# Section layout mirroring the Tk parameters column ordering. Order
-# matters — the original GUI's vertical layout is reproduced top-to-bottom.
-SECTIONS: list[tuple[str, list[str]]] = [
-    ("Similarity", ["ThresholdSlider"]),
-    ("Swapper", [
-        "MergeTextSel", "SwapperTypeTextSel",
-    ]),
-    ("Restorer", [
-        "RestorerSwitch", "RestorerTypeTextSel",
-        "RestorerDetTypeTextSel", "RestorerSlider",
-    ]),
-    ("Orientation", ["OrientSwitch", "OrientAutoSwitch", "OrientSlider"]),
-    ("Likeness / Fidelity", [
-        "LikenessSlider", "EmbExtrapSlider",
-        "HighFidelitySwitch", "HighFidelityAlphaSlider",
-        "HighFidelityModeTextSel",
-        "HFRefineButton", "HFClearCacheButton",
-        "StrengthSwitch", "StrengthSlider",
-    ]),
-    ("Masking", [
-        "BorderTopSlider", "BorderSidesSlider",
-        "BorderBottomSlider", "BorderBlurSlider",
-        "DiffSwitch", "DiffSlider",
-        "OccluderSwitch", "OccluderSlider",
-        "DFLXSegSwitch", "DFLXSegSizeSlider", "DFLXSegBlurSlider",
-        "FaceParserSwitch", "FaceParserSlider", "MouthParserSlider",
-        "BlendSlider",
-    ]),
-    ("Color", [
-        "ColorMatchSwitch",
-        "ColorSwitch",
-        "ColorRedSlider", "ColorGreenSlider", "ColorBlueSlider",
-        "ColorGammaSlider", "ColorContrastSlider", "ColorSaturationSlider",
-    ]),
-    ("Face Adjustments", [
-        "FaceAdjSwitch",
-        "KPSXSlider", "KPSYSlider", "KPSScaleSlider", "FaceScaleSlider",
-    ]),
-]
-
-
-# Settings tab sections — system-level controls split out of the
-# Parameters tab so the swap-tuning workflow isn't cluttered with
-# threading / detection / encoder knobs.
-SETTINGS_SECTIONS: list[tuple[str, list[str]]] = [
-    ("Threading", ["ThreadsSlider", "ModelSessionsTextSel"]),
-    ("Detection", ["DetectTypeTextSel", "DetectInputSizeTextSel", "DetectScoreSlider"]),
-    ("Recording", ["RecordTypeTextSel", "VideoQualSlider"]),
-    # Live screen-capture knobs. CaptureFPSSlider is read each capture
-    # tick by WindowCapture via the params-pane value mirror; the swap
-    # worker count reuses ThreadsSlider above.
-    ("Capture", ["CaptureFPSSlider"]),
-]
 
 
 def _widget_for(param: Parameter) -> QWidget:
@@ -125,6 +75,11 @@ class ParametersPane(QFrame):
 
     params_changed = Signal(dict)
     io_action = Signal(str)
+    # Named presets (rope.qt.presets). The host owns the files; the pane
+    # only renders the list and forwards user intent.
+    preset_selected = Signal(str)
+    preset_save_as_requested = Signal()
+    preset_delete_requested = Signal(str)
     # Emitted when an in-section button is clicked. Payload is the
     # button param's `name`. Host wires this to per-button handlers
     # (e.g. HF refine / clear cache).
@@ -212,6 +167,29 @@ class ParametersPane(QFrame):
             io_lay.addWidget(btn)
         io_lay.addStretch()
         params_layout.addWidget(io_row)
+
+        # Preset row: [preset dropdown][Save As…][Delete]
+        preset_row = QFrame(); preset_row.setProperty("panelTier", "3")
+        pr_lay = QHBoxLayout(preset_row); pr_lay.setContentsMargins(8, 0, 8, 6); pr_lay.setSpacing(6)
+        pr_label = QLabel("Preset")
+        pr_lay.addWidget(pr_label)
+        self._preset_combo = QComboBox()
+        self._preset_combo.setToolTip(
+            "Named parameter presets. Selecting one applies it immediately."
+        )
+        self._preset_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._preset_combo.activated.connect(self._on_preset_activated)
+        pr_lay.addWidget(self._preset_combo, stretch=1)
+        save_as = QPushButton("Save As…")
+        save_as.setToolTip("Save the current parameters as a named preset")
+        save_as.clicked.connect(self.preset_save_as_requested.emit)
+        pr_lay.addWidget(save_as)
+        self._preset_delete_btn = QPushButton("Delete")
+        self._preset_delete_btn.setToolTip("Delete the selected preset file")
+        self._preset_delete_btn.clicked.connect(self._on_preset_delete_clicked)
+        pr_lay.addWidget(self._preset_delete_btn)
+        params_layout.addWidget(preset_row)
+        self.set_presets([], None)
 
         # Scrollable parameter list
         self._scroll = QScrollArea()
@@ -327,6 +305,34 @@ class ParametersPane(QFrame):
         settings_scroll.setWidget(settings_body)
 
         self._tabs.addTab(settings_tab, "Settings")
+
+    # ----- Presets ---------------------------------------------------------
+
+    _NO_PRESET = "(none)"
+
+    def set_presets(self, names: list[str], current: str | None) -> None:
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.clear()
+        self._preset_combo.addItem(self._NO_PRESET)
+        self._preset_combo.addItems(names)
+        idx = self._preset_combo.findText(current) if current else 0
+        self._preset_combo.setCurrentIndex(max(idx, 0))
+        self._preset_combo.blockSignals(False)
+        self._preset_delete_btn.setEnabled(bool(names))
+
+    def current_preset(self) -> str | None:
+        text = self._preset_combo.currentText()
+        return None if text == self._NO_PRESET else text
+
+    def _on_preset_activated(self, _index: int) -> None:
+        name = self.current_preset()
+        if name:
+            self.preset_selected.emit(name)
+
+    def _on_preset_delete_clicked(self) -> None:
+        name = self.current_preset()
+        if name:
+            self.preset_delete_requested.emit(name)
 
     def _build_collapsible_group(self, title: str) -> tuple[QFrame, QVBoxLayout]:
         """Collapsible-section shell for arbitrary child widgets.
@@ -445,7 +451,7 @@ class ParametersPane(QFrame):
         default-label."""
         # Track the resolved folder separately so the Refresh button
         # doesn't have to round-trip through the label text.
-        self._models_folder_value = path if path else "./models"
+        self._models_folder_value = path if path else DEFAULT_MODELS_FOLDER
         if hasattr(self, "_models_folder_label"):
             if path:
                 self._models_folder_label.setText(path)
@@ -601,12 +607,12 @@ class ParametersPane(QFrame):
         construction. None disables the Loaded column."""
         self._models = models
         self.refresh_models_inventory(
-            getattr(self, "_models_folder_value", "./models")
+            getattr(self, "_models_folder_value", DEFAULT_MODELS_FOLDER)
         )
 
     def _on_models_inventory_refresh_clicked(self) -> None:
         self.refresh_models_inventory(
-            getattr(self, "_models_folder_value", "./models")
+            getattr(self, "_models_folder_value", DEFAULT_MODELS_FOLDER)
         )
 
     def _on_backend_toggle_clicked(self, attr_name: str) -> None:

@@ -18,7 +18,10 @@ from rope._nvtx import nvtx_range
 onnxruntime.set_default_logger_severity(4)
 
 
-DEFAULT_MODELS_FOLDER = './models'
+# <repo>/models, independent of the launch directory. $ROPE_MODELS
+# overrides it (handy for a shared weights drive).
+DEFAULT_MODELS_FOLDER = os.environ.get('ROPE_MODELS') or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
 
 
 # Inventory of model files the application can load from the models
@@ -2313,6 +2316,9 @@ class Models():
     def resnet50(self, image, score=.5):   
         if not self.resnet50_model:
             self.resnet50_model = onnxruntime.InferenceSession(self._mp("res50.onnx"), providers=self.providers)
+            # Rebuild priors from scratch — after an unload/reload they
+            # would otherwise be appended a second time.
+            self.anchors = []
             
             feature_maps = [[64, 64], [32, 32], [16, 16]]
             min_sizes = [[16, 32], [64, 128], [256, 512]]

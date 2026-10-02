@@ -317,7 +317,12 @@ class PreviewWidget(QOpenGLWidget):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
-        GL.glTexStorage2D(GL.GL_TEXTURE_2D, 1, GL.GL_RGBA8, w, h)
+        if bool(GL.glTexStorage2D):
+            GL.glTexStorage2D(GL.GL_TEXTURE_2D, 1, GL.GL_RGBA8, w, h)
+        else:
+            # glTexStorage2D is GL 4.2+; macOS tops out at 4.1 core.
+            GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, w, h, 0,
+                            GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, None)
         self._tex_w, self._tex_h = w, h
         self._recompute_scale()
         # CUDA bridge has to re-register the new texture.

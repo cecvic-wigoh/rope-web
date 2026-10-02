@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -36,6 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from rope.Models import DEFAULT_MODELS_FOLDER
+from rope.qt import paths, presets
 from rope.qt.bus import bus
 from rope.qt.panes.center_pane import CenterPane
 from rope.qt.panes.left_pane import SourceFacesPanel, TargetMediaPanel
@@ -54,7 +57,34 @@ from rope.qt.widgets.text import Text
 from rope.qt.widgets.vram_indicator import VRAMIndicator
 
 
-SAVED_PARAMETERS_JSON = "saved_parameters.json"
+
+
+class _StatusText(Text):
+    """Single-line bottom-bar label. Multi-line InfoText is flattened and
+    elided to fit; the full text stays available as the tooltip."""
+
+    def __init__(self) -> None:
+        super().__init__(text="", tier=1)
+        self.setMinimumWidth(0)
+        self._full = ""
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt API)
+        self._full = " ".join(str(text or "").split())
+        self.setToolTip(str(text or ""))
+        self._render()
+
+    def text(self) -> str:  # noqa: N802
+        return self._full
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._render()
+
+    def _render(self) -> None:
+        elided = self.fontMetrics().elidedText(
+            self._full, Qt.ElideRight, max(self.width(), 10)
+        )
+        QLabel.setText(self, elided)
 
 
 def _tier_frame(tier: int) -> QFrame:
@@ -182,6 +212,9 @@ class MainWindow(QMainWindow):
         for btn in self._buttons.values():
             btn.add_info_frame(self._tooltip_label)
         self._center_pane.attach_info_label(self._tooltip_label)
+        for widget in self._params_pane.widgets.values():
+            if hasattr(widget, "add_info_frame"):
+                widget.add_info_frame(self._tooltip_label)
 
         self._install_shortcuts()
 
@@ -191,28 +224,39 @@ class MainWindow(QMainWindow):
         bus.control_changed.emit(dict(self._control))
 
     def _install_shortcuts(self) -> None:
-        """Replicate the Tk GUI's keyboard bindings (preview_control)."""
-        bindings: list[tuple[str, callable]] = [
-            ("Space", self._on_play_pressed),
-            ("Q", lambda: self._center_pane.timeline.set(0)),
-            ("A", lambda: self._nudge_timeline(-30)),
-            ("D", lambda: self._nudge_timeline(30)),
-            ("Left", lambda: self._nudge_timeline(-1)),
-            ("Right", lambda: self._nudge_timeline(1)),
-            ("Home", lambda: self._seek_to_frame(0)),
-            ("End", lambda: self._seek_to_frame(
+        """Bind keyboard shortcuts. Key sequences come from
+        Settings.shortcut_map() — defaults in settings.DEFAULT_SHORTCUTS,
+        overridable per action via "shortcuts" in data.json."""
+        nudge = int(self.settings.nudge_frames)
+        handlers: dict[str, callable] = {
+            "play_pause": self._on_play_pressed,
+            "timeline_start": lambda: self._center_pane.timeline.set(0),
+            "nudge_back": lambda: self._nudge_timeline(-nudge),
+            "nudge_forward": lambda: self._nudge_timeline(nudge),
+            "frame_back": lambda: self._nudge_timeline(-1),
+            "frame_forward": lambda: self._nudge_timeline(1),
+            "seek_start": lambda: self._seek_to_frame(0),
+            "seek_end": lambda: self._seek_to_frame(
                 self._center_pane.timeline.get_length()
-            )),
-            ("M", self._on_add_marker),
-            ("Shift+M", self._on_del_marker),
-            ("Shift+,", self._on_prev_marker),   # < key
-            ("Shift+.", self._on_next_marker),   # > key
-            ("Ctrl+S", lambda: self._on_params_io("save")),
-            ("F3", self._center_pane.preview.toggle_hud),
-        ]
+            ),
+            "add_marker": self._on_add_marker,
+            "delete_marker": self._on_del_marker,
+            "prev_marker": self._on_prev_marker,
+            "next_marker": self._on_next_marker,
+            "save_params": lambda: self._on_params_io("save"),
+            "save_preset_as": self._on_preset_save_as,
+            "toggle_hud": self._center_pane.preview.toggle_hud,
+        }
         self._shortcuts: list[QShortcut] = []
-        for keyseq, handler in bindings:
-            sc = QShortcut(QKeySequence(keyseq), self)
+        for action, keyseq in self.settings.shortcut_map().items():
+            handler = handlers.get(action)
+            if handler is None or not keyseq:
+                continue
+            seq = QKeySequence(keyseq)
+            if seq.isEmpty():
+                print(f"[main_window] ignoring invalid shortcut {action}={keyseq!r}")
+                continue
+            sc = QShortcut(seq, self)
             sc.activated.connect(handler)
             self._shortcuts.append(sc)
 
@@ -338,6 +382,10 @@ class MainWindow(QMainWindow):
         self._params_pane = ParametersPane()
         self._params_pane.params_changed.connect(self._on_params_changed)
         self._params_pane.io_action.connect(self._on_params_io)
+        self._params_pane.preset_selected.connect(self._on_preset_selected)
+        self._params_pane.preset_save_as_requested.connect(self._on_preset_save_as)
+        self._params_pane.preset_delete_requested.connect(self._on_preset_delete)
+        self._params_pane.set_presets(presets.list_presets(), self.settings.last_preset)
         self._params_pane.button_clicked.connect(self._on_params_button_clicked)
         self._params_pane.apply_collapsed_state(self.settings.params_collapsed)
         self._params_pane.section_toggled.connect(self._on_param_section_toggled)
@@ -1161,9 +1209,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
 
-        # Bottom-left: PayPal donation hotlink, replacing the old hover-help
-        # / status text. Rich-text QLabel; setOpenExternalLinks opens the
-        # URL in the default browser when the link is clicked.
+        # Bottom-left: status / hover-help text. Every widget's InfoText
+        # (via add_info_frame) and the ~40 status messages
+        # ("Save Image: pick a valid Output Folder first", preload
+        # errors, ...) land here.
+        self._tooltip_label = _StatusText()
+        layout.addWidget(self._tooltip_label, stretch=1)
+
+        # PayPal donation hotlink, kept but moved next to the VRAM meter.
         donate = QLabel(
             '<a href="https://www.paypal.com/donate/'
             '?hosted_button_id=Y5SB9LSXFGRF2" '
@@ -1176,17 +1229,6 @@ class MainWindow(QMainWindow):
         donate.setStyleSheet("font-size: 9pt;")
         donate.setToolTip("Opens the PayPal donation page in your browser")
         layout.addWidget(donate)
-
-        layout.addStretch(1)
-
-        # The hover-info / status label is retained as a hidden sink: the
-        # many widgets that call add_info_frame(self._tooltip_label) plus
-        # the ~40 setText(...) status updates keep working, but nothing is
-        # rendered — the help text is no longer shown (the donation link
-        # takes its place in the bottom bar).
-        self._tooltip_label = Text(text="", tier=1)
-        self._tooltip_label.setParent(bar)
-        self._tooltip_label.setVisible(False)
 
         # VRAM indicator anchored bottom-right. Updates flow in via
         # bus.vram_updated, which the coordinator polls on its idle tick.
@@ -1344,7 +1386,7 @@ class MainWindow(QMainWindow):
         # Force a refresh in case the model wasn't loaded (no
         # vram_updated will fire) — the button label still needs to flip.
         self._params_pane.refresh_models_inventory(
-            self.settings.models_folder or "./models"
+            self.settings.models_folder or DEFAULT_MODELS_FOLDER
         )
 
     @Slot(float, float)
@@ -1354,7 +1396,7 @@ class MainWindow(QMainWindow):
         # column refresh. We don't need the actual GB numbers here.
         if hasattr(self, "_params_pane"):
             self._params_pane.refresh_models_inventory(
-                self.settings.models_folder or "./models"
+                self.settings.models_folder or DEFAULT_MODELS_FOLDER
             )
 
     def _on_benchmark(self, *_args) -> None:
@@ -1403,7 +1445,7 @@ class MainWindow(QMainWindow):
     # ----- Parameter round-trip ---------------------------------------------------
 
     def _load_saved_parameters(self) -> None:
-        values = load_params(SAVED_PARAMETERS_JSON)
+        values = load_params(paths.saved_parameters_json())
         if values:
             self._params_pane.apply_values(values, emit=True)
 
@@ -1478,14 +1520,16 @@ class MainWindow(QMainWindow):
     def _on_params_io(self, action: str) -> None:
         if action == "save":
             try:
-                save_params(self._params_pane.values, SAVED_PARAMETERS_JSON)
+                save_params(self._params_pane.values, paths.saved_parameters_json())
                 self._tooltip_label.setText(f"Saved {len(self._params_pane.values)} parameters")
             except OSError as exc:
                 QMessageBox.warning(self, "Save failed", str(exc))
         elif action == "load":
-            values = load_params(SAVED_PARAMETERS_JSON)
+            values = load_params(paths.saved_parameters_json())
             if not values:
-                self._tooltip_label.setText("No saved_parameters.json found")
+                self._tooltip_label.setText(
+                    f"No saved parameters found at {paths.saved_parameters_json()}"
+                )
                 return
             self._params_pane.apply_values(values, emit=True)
             # apply_values(emit=True) routes through _on_params_changed
@@ -1494,6 +1538,58 @@ class MainWindow(QMainWindow):
         elif action == "default":
             self._params_pane.load_defaults(emit=True)
             self._tooltip_label.setText("Parameters reset to defaults")
+
+    def _on_preset_selected(self, name: str) -> None:
+        values = presets.load_preset(name)
+        if not values:
+            self._tooltip_label.setText(f"Preset '{name}' is empty or unreadable")
+            return
+        self._params_pane.apply_values(values, emit=True)
+        self.settings.last_preset = name
+        self.settings.save()
+        self._tooltip_label.setText(f"Applied preset '{name}' ({len(values)} parameters)")
+
+    def _on_preset_save_as(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "Save Preset", "Preset name:",
+            text=self._params_pane.current_preset() or "",
+        )
+        if not ok or not name.strip():
+            return
+        existing = presets.list_presets()
+        if presets.sanitize_name(name) in existing:
+            answer = QMessageBox.question(
+                self, "Overwrite preset?",
+                f"A preset named '{presets.sanitize_name(name)}' already exists. Overwrite it?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+        try:
+            saved = presets.save_preset(name, self._params_pane.values)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Save preset failed", str(exc))
+            return
+        self.settings.last_preset = saved
+        self.settings.save()
+        self._params_pane.set_presets(presets.list_presets(), saved)
+        self._tooltip_label.setText(f"Saved preset '{saved}'")
+
+    def _on_preset_delete(self, name: str) -> None:
+        answer = QMessageBox.question(
+            self, "Delete preset?", f"Delete preset '{name}'? This removes its file.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            presets.delete_preset(name)
+        except OSError as exc:
+            QMessageBox.warning(self, "Delete preset failed", str(exc))
+            return
+        if self.settings.last_preset == name:
+            self.settings.last_preset = None
+            self.settings.save()
+        self._params_pane.set_presets(presets.list_presets(), None)
+        self._tooltip_label.setText(f"Deleted preset '{name}'")
 
     def _on_params_button_clicked(self, name: str) -> None:
         """Route parameter-pane button clicks. Covers in-section

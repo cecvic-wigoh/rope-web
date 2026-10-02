@@ -244,6 +244,62 @@ PARAMETERS: list[Parameter] = [
 PARAMETER_BY_NAME: dict[str, Parameter] = {p.name: p for p in PARAMETERS}
 
 
+# Section layout (shared by the Qt parameters pane and the web UI),
+# mirroring the Tk parameters column ordering. Order
+# matters — the original GUI's vertical layout is reproduced top-to-bottom.
+SECTIONS: list[tuple[str, list[str]]] = [
+    ("Similarity", ["ThresholdSlider"]),
+    ("Swapper", [
+        "MergeTextSel", "SwapperTypeTextSel",
+    ]),
+    ("Restorer", [
+        "RestorerSwitch", "RestorerTypeTextSel",
+        "RestorerDetTypeTextSel", "RestorerSlider",
+    ]),
+    ("Orientation", ["OrientSwitch", "OrientAutoSwitch", "OrientSlider"]),
+    ("Likeness / Fidelity", [
+        "LikenessSlider", "EmbExtrapSlider",
+        "HighFidelitySwitch", "HighFidelityAlphaSlider",
+        "HighFidelityModeTextSel",
+        "HFRefineButton", "HFClearCacheButton",
+        "StrengthSwitch", "StrengthSlider",
+    ]),
+    ("Masking", [
+        "BorderTopSlider", "BorderSidesSlider",
+        "BorderBottomSlider", "BorderBlurSlider",
+        "DiffSwitch", "DiffSlider",
+        "OccluderSwitch", "OccluderSlider",
+        "DFLXSegSwitch", "DFLXSegSizeSlider", "DFLXSegBlurSlider",
+        "FaceParserSwitch", "FaceParserSlider", "MouthParserSlider",
+        "BlendSlider",
+    ]),
+    ("Color", [
+        "ColorMatchSwitch",
+        "ColorSwitch",
+        "ColorRedSlider", "ColorGreenSlider", "ColorBlueSlider",
+        "ColorGammaSlider", "ColorContrastSlider", "ColorSaturationSlider",
+    ]),
+    ("Face Adjustments", [
+        "FaceAdjSwitch",
+        "KPSXSlider", "KPSYSlider", "KPSScaleSlider", "FaceScaleSlider",
+    ]),
+]
+
+
+# Settings tab sections — system-level controls split out of the
+# Parameters tab so the swap-tuning workflow isn't cluttered with
+# threading / detection / encoder knobs.
+SETTINGS_SECTIONS: list[tuple[str, list[str]]] = [
+    ("Threading", ["ThreadsSlider", "ModelSessionsTextSel"]),
+    ("Detection", ["DetectTypeTextSel", "DetectInputSizeTextSel", "DetectScoreSlider"]),
+    ("Recording", ["RecordTypeTextSel", "VideoQualSlider"]),
+    # Live screen-capture knobs. CaptureFPSSlider is read each capture
+    # tick by WindowCapture via the params-pane value mirror; the swap
+    # worker count reuses ThreadsSlider above.
+    ("Capture", ["CaptureFPSSlider"]),
+]
+
+
 def parameters_by_kind(kind: str) -> Iterable[Parameter]:
     return (p for p in PARAMETERS if p.kind == kind)
 

@@ -1,4 +1,5 @@
-"""Persistent app settings — reads/writes data.json at the project root.
+"""Persistent app settings — reads/writes data.json in the config dir
+(see rope.qt.paths: --config-dir, $ROPE_HOME, or the repo root).
 
 Same on-disk schema as the legacy Tk GUI (rope/GUI.py:112-118):
 
@@ -14,6 +15,14 @@ Same on-disk schema as the legacy Tk GUI (rope/GUI.py:112-118):
 
 New keys are additive — the Tk version ignores them, and the Qt version
 tolerates their absence.
+
+User-customizable keys (edit data.json while Rope is closed):
+
+    "shortcuts":      {action: key sequence}, overrides DEFAULT_SHORTCUTS;
+                      an empty string disables that shortcut
+    "nudge_frames":   frames skipped by the nudge_back/nudge_forward keys
+    "ui_font_family": UI font family (None = platform default)
+    "ui_font_size":   UI font point size (None = stylesheet default)
 """
 
 from __future__ import annotations
@@ -23,7 +32,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-DATA_JSON = Path("data.json")
+from rope.qt import paths
+
+# Action name -> default key sequence. Users override any subset via the
+# "shortcuts" dict in data.json; MainWindow maps action names to handlers.
+DEFAULT_SHORTCUTS: dict[str, str] = {
+    "play_pause": "Space",
+    "timeline_start": "Q",
+    "nudge_back": "A",
+    "nudge_forward": "D",
+    "frame_back": "Left",
+    "frame_forward": "Right",
+    "seek_start": "Home",
+    "seek_end": "End",
+    "add_marker": "M",
+    "delete_marker": "Shift+M",
+    "prev_marker": "Shift+,",
+    "next_marker": "Shift+.",
+    "save_params": "Ctrl+S",
+    "save_preset_as": "Ctrl+Shift+S",
+    "toggle_hud": "F3",
+}
 
 
 @dataclass
@@ -53,10 +82,22 @@ class Settings:
     # file is on disk, fall back to ONNX. Set via the Settings tab's
     # Backend toggle and applied at the next lazy model load.
     model_backends: dict[str, str] = field(default_factory=dict)
+    shortcuts: dict[str, str] = field(default_factory=dict)
+    nudge_frames: int = 30
+    ui_font_family: str | None = None
+    ui_font_size: int | None = None
+    # Name of the preset last loaded/saved, re-selected in the preset box.
+    last_preset: str | None = None
+
+    def shortcut_map(self) -> dict[str, str]:
+        """DEFAULT_SHORTCUTS with the user's overrides applied."""
+        merged = dict(DEFAULT_SHORTCUTS)
+        merged.update({k: v for k, v in self.shortcuts.items() if k in merged})
+        return merged
 
     @classmethod
-    def load(cls, path: Path | str = DATA_JSON) -> "Settings":
-        p = Path(path)
+    def load(cls, path: Path | str | None = None) -> "Settings":
+        p = Path(path) if path is not None else paths.data_json()
         if not p.is_file():
             return cls()
         try:
@@ -86,9 +127,16 @@ class Settings:
             splitter_center_sizes=list(raw.get("splitter_center_sizes", [700, 180])),
             params_collapsed=params_collapsed,
             model_backends=model_backends,
+            shortcuts={
+                str(k): str(v) for k, v in raw.get("shortcuts", {}).items()
+            } if isinstance(raw.get("shortcuts"), dict) else {},
+            nudge_frames=_int_or(raw.get("nudge_frames"), 30, minimum=1),
+            ui_font_family=raw.get("ui_font_family") or None,
+            ui_font_size=_int_or(raw.get("ui_font_size"), None, minimum=6),
+            last_preset=raw.get("last_preset") or None,
         )
 
-    def save(self, path: Path | str = DATA_JSON) -> None:
+    def save(self, path: Path | str | None = None) -> None:
         out: dict[str, Any] = {
             "source videos": self.source_videos,
             "source faces": self.source_faces,
@@ -101,8 +149,24 @@ class Settings:
             "splitter_center_sizes": list(self.splitter_center_sizes),
             "params_collapsed": dict(self.params_collapsed),
             "model_backends": dict(self.model_backends),
+            "shortcuts": dict(self.shortcuts),
+            "nudge_frames": int(self.nudge_frames),
+            "ui_font_family": self.ui_font_family,
+            "ui_font_size": self.ui_font_size,
+            "last_preset": self.last_preset,
         }
-        Path(path).write_text(json.dumps(out, indent=2), encoding="utf-8")
+        target = Path(path) if path is not None else paths.data_json()
+        # Write-then-rename so a crash mid-write can't truncate data.json.
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
+        tmp.replace(target)
+
+
+def _int_or(value: Any, default: Any, *, minimum: int) -> Any:
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def shorten_path(path: str | None, max_len: int = 28) -> str:

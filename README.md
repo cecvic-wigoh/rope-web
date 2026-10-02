@@ -31,6 +31,48 @@ pip install -r requirements.lock.txt
 ```
 Also, copy models from the Rope-Bronze Models Release to somewhere on your drive. In settings, select the folder they were copied to (you have to unzip them).
 
+On macOS / Linux use `python3.12 -m venv venv`, `source venv/bin/activate`, and launch with `./rope.sh`. Note: the swap pipeline currently requires an NVIDIA GPU (CUDA); on other machines the UI runs but swapping does not (see [ANALYSIS.md](ANALYSIS.md)).
+
+### Web app (Lightning AI / headless GPU servers): ###
+Run Rope in the browser on a remote NVIDIA GPU. See [webapp/README.md](webapp/README.md):
+```bash
+bash webapp/setup_lightning.sh && python webapp/app.py
+```
+
+### Command line: ###
+```
+python Rope.py [--config-dir DIR] [--models-dir DIR] [--output-dir DIR]
+               [--preset NAME_OR_FILE] [--stylesheet QSS] [--no-backend] [--print-config]
+```
+`Rope.bat` and `rope.sh` forward these flags. Environment variables: `ROPE_HOME` (config dir), `ROPE_MODELS` (default models folder).
+
+### Customization: ###
+All user files live in the config dir (`--config-dir`, else `$ROPE_HOME`, else the repo root). Run `python Rope.py --print-config` to see where.
+
+| File | Purpose |
+|---|---|
+| `data.json` | Folders, window layout, shortcuts, fonts |
+| `saved_parameters.json` | Quick-save slot (Save Params / Load Params / Ctrl+S) |
+| `presets/<name>.json` | Named presets, managed from the **Preset** row in the Parameters tab (Ctrl+Shift+S = Save As) |
+| `user.qss` | Optional Qt stylesheet appended after the built-in theme |
+
+**Keyboard shortcuts.** Override any of these in `data.json` (edit while Rope is closed). An empty string disables a shortcut:
+```json
+"shortcuts": { "play_pause": "P", "nudge_back": "J", "nudge_forward": "L", "toggle_hud": "" },
+"nudge_frames": 10
+```
+Actions and their defaults: `play_pause` Space, `timeline_start` Q, `nudge_back` A, `nudge_forward` D, `frame_back` Left, `frame_forward` Right, `seek_start` Home, `seek_end` End, `add_marker` M, `delete_marker` Shift+M, `prev_marker` Shift+, , `next_marker` Shift+. , `save_params` Ctrl+S, `save_preset_as` Ctrl+Shift+S, `toggle_hud` F3.
+
+**Fonts.** `"ui_font_family": "Inter", "ui_font_size": 10` in `data.json`.
+
+**Theme.** For example, a `user.qss` with a different accent color:
+```css
+QPushButton:checked, QPushButton[state="on"] { color: #4FC3F7; }
+QTabBar::tab:selected { color: #4FC3F7; }
+```
+
+Hovering any button or slider shows its help text in the bottom status bar. Status and error messages appear there too.
+
 ### Disclaimer: ###
 Rope is a personal project that I'm making available to the community as a thank you for all of the contributors ahead of me.
 I've copied the disclaimer from [Swap-Mukham](https://github.com/harisreedhar/Swap-Mukham) here since it is well-written and applies 100% to this repo.

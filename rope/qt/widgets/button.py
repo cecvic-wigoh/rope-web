@@ -21,13 +21,14 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 from rope.qt.parameters import ButtonParam
+from rope.qt.paths import resolve_asset
 
 
 def _load_icon(path: str | None) -> QIcon:
     if not path:
         return QIcon()
-    p = Path(path)
-    if not p.is_file():
+    p = resolve_asset(path)
+    if p is None or not p.is_file():
         return QIcon()
     return QIcon(QPixmap(str(p)))
 

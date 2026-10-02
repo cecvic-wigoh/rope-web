@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# One-time setup for a Lightning AI Studio (or any Linux + NVIDIA GPU box).
+#   bash webapp/setup_lightning.sh
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || {
+  echo "No NVIDIA GPU visible — switch the Studio to a GPU machine first."; exit 1; }
+
+if ! python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+  echo "Installing CUDA build of torch/torchvision..."
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+fi
+
+pip install -r webapp/requirements.txt
+python webapp/download_models.py --models-dir models
+
+python - <<'PY'
+import torch, onnxruntime as ort
+print("torch", torch.__version__, "| CUDA", torch.cuda.is_available(), "|", torch.cuda.get_device_name(0))
+print("onnxruntime", ort.__version__, "| providers", ort.get_available_providers())
+assert "CUDAExecutionProvider" in ort.get_available_providers(), "onnxruntime-gpu CUDA provider missing"
+PY
+echo
+echo "Setup complete. Start the app with:  python webapp/app.py"

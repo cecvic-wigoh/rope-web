@@ -970,6 +970,12 @@ class VideoManager():
                 self.benchmark_headless = False
 
         elif command == "record":
+            if (not self.target_video or self.is_image_loaded
+                    or not self.saved_video_path):
+                print('[VideoManager] record: load a target video and set an '
+                      'Output Folder first')
+                bus.stop_play.emit()
+                return
             self.record = True
             self.play = True
             self.total_thread_time = 0.0
@@ -1190,7 +1196,7 @@ class VideoManager():
                             # Recording succeeded but we can't mux audio.
                             # Promote the temp file to the final filename
                             # so the user at least keeps the silent video.
-                            print('[VideoManager] ffmpeg.exe not found for '
+                            print('[VideoManager] ffmpeg not found for '
                                   'audio mux step — saving video without '
                                   'audio as %s' % final_file)
                             try:
@@ -1209,11 +1215,23 @@ class VideoManager():
                                     "-map", "0:v:0", "-map", "1:a:0?",
                                     "-shortest",
                                     final_file]
-                            subprocess.run(args)
-                            try:
-                                os.remove(self.temp_file)
-                            except OSError:
-                                pass
+                            result = subprocess.run(args)
+                            if result.returncode == 0:
+                                try:
+                                    os.remove(self.temp_file)
+                                except OSError:
+                                    pass
+                            else:
+                                # Mux failed — keep the silent render rather
+                                # than deleting the only copy.
+                                print('[VideoManager] audio mux failed (exit '
+                                      '%d) — keeping video without audio as %s'
+                                      % (result.returncode, final_file))
+                                try:
+                                    os.replace(self.temp_file, final_file)
+                                except OSError as e:
+                                    print('[VideoManager] could not rename '
+                                          'temp file: %s' % e)
 
                         timef= time.time() - self.timer 
                         self.record = False
@@ -1291,7 +1309,10 @@ class VideoManager():
                 temp.append(self.markers[i]['frame'])
             idx = bisect.bisect(temp, frame_number)
 
-            parameters = self.markers[idx-1]['parameters'].copy()
+            # idx == 0 means the frame precedes the first marker; keep the
+            # live parameters instead of wrapping to the last marker.
+            if idx > 0:
+                parameters = self.markers[idx-1]['parameters'].copy()
 
         # Accept either a CPU numpy array (legacy / PyAV-CPU decode path)
         # or a CUDA tensor (torchcodec GPU-resident decode path). Skipping
@@ -1621,7 +1642,10 @@ class VideoManager():
         else:
             poly_pass = self._polyphase_pass_v1
 
-        for k in range(itex):
+        # Always run at least one pass: Strength 0 still needs a
+        # swap_face_output (the itex == 0 branch below then substitutes
+        # the original face).
+        for k in range(max(itex, 1)):
             with nvtx_range(f"sc_polypass[k={k}]"):
                 swap_face_output = poly_pass(swap_face_input, latent, dim, swap_size, parameters,)
                 # Track current input as prev_face by reference — no clone.
@@ -2416,7 +2440,7 @@ class VideoManager():
         swapped_face = swapped_face.permute(1,2,0)
         original_face = original_face.permute(1,2,0)
 
-        diff = swapped_face-original_face
+        diff = swapped_face.float()-original_face.float()
         diff = torch.abs(diff)
         
         # Find the diffrence between the swap and original, per channel

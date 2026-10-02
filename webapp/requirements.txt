@@ -1,0 +1,13 @@
+# Rope web app (Linux + NVIDIA GPU). torch/torchvision are installed by
+# setup_lightning.sh from the CUDA index when the machine lacks a CUDA build.
+onnxruntime-gpu>=1.20
+onnx
+numpy
+opencv-python-headless
+scikit-image
+pillow
+av
+# QtCore only — the engine shares rope.qt's signal bus and parameter schema.
+PySide6-Essentials>=6.7
+gradio>=5,<7
+imageio-ffmpeg
