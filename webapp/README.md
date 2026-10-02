@@ -18,12 +18,30 @@ To keep it running after you close the terminal, use `nohup python webapp/app.py
 
 ## Using it
 
-1. Upload one or more **source** face images. They are merged into one identity, using the Merge Math setting.
-2. Upload the **target** video or image, then click **Find faces in target**. The app samples frames across the video and lists each distinct face.
-3. Tick the faces to swap, pick a frame, and click **Preview frame** to tune the settings on the right.
-4. Choose an optional frame range, confirm consent, and click **Render**. The result is an H.264 MP4 with the original audio, saved to `outputs/` and downloadable from the page.
+The interface follows FaceFusion's three-column layout:
 
-Settings on the right are the same parameters as the desktop app. **Presets** are saved as `presets/<name>.json` in the config dir, so they are interchangeable with the desktop app's presets.
+| Column | What's there |
+|---|---|
+| **Left** | **Processors** (`face_swapper`, `face_enhancer`, `color_corrector`, `face_adjuster`) and the options for each enabled processor. Below them: execution provider (CUDA / TensorRT), thread count, output quality and encoder, and presets. |
+| **Middle** | **Source** face image(s), **Target** image or video, output path, the **terminal** (live log and progress), and **Start / Stop / Clear**. |
+| **Right** | **Live preview**, which re-renders on every change. Preview modes are `default`, `frame-by-frame` (before and after side by side) and `face-by-face`. Also here: preview frame slider, **trim frame** range, **face selector**, **face masker** and **face detector**. |
+
+**Face selector modes**
+
+- `reference`: click a face in the gallery to swap only that person.
+- `many`: swap every face.
+
+**Face mask types**
+
+| Type | What it does |
+|---|---|
+| `box` | Feathered border |
+| `occlusion` | Hands and objects |
+| `region` | Face parser, including the mouth |
+| `xseg` | DFL XSeg mask |
+| `diff` | Keeps unchanged pixels |
+
+Results are saved to the output path (default `outputs/`) and shown in the OUTPUT player with a download button. **Presets** are saved as `presets/<name>.json` in the config dir and are interchangeable with the desktop app's presets.
 
 ## Options
 
@@ -32,7 +50,7 @@ Settings on the right are the same parameters as the desktop app. **Presets** ar
 | `--models-dir` / `ROPE_MODELS` | `models/` | Model weights |
 | `--output-dir` / `ROPE_OUTPUT_DIR` | `outputs/` | Rendered files |
 | `--config-dir` / `ROPE_HOME` | repo root | Presets location |
-| `--backend` / `ROPE_BACKEND` | `onnx` | `trt` = TensorRT: faster per frame, but builds engines for several minutes on first use (needs `pip install tensorrt`) |
+| `--backend` / `ROPE_BACKEND` | `cuda` | `tensorrt`: faster per frame, but builds engines for several minutes on first use (needs `pip install tensorrt`). Also switchable in the UI. |
 | `--port` / `PORT` | 7860 | |
 | `ROPE_WEB_USER` / `ROPE_WEB_PASSWORD` | `rope` / random | If no password is set, a random one is printed at startup |
 | `--share` | off | Also create a public gradio.live link |

@@ -1416,6 +1416,12 @@ class VideoManager():
                 for found_face in self.found_faces:
                     if not found_face.get("SourceFaceAssignments"):
                         continue  # target-only slot, no source assigned yet
+                    if found_face.get("MatchAll"):
+                        # Wildcard slot (web UI "many" mode): swap every
+                        # detected face, no reference embedding needed.
+                        if best_slot is None:
+                            best_slot = found_face
+                        continue
                     emb = found_face.get("Embedding")
                     if emb is None:
                         continue

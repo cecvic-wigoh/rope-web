@@ -1,0 +1,62 @@
+/* Rope web UI — compact, borderless blocks in the style of FaceFusion's UI. */
+
+.gradio-container { overflow: unset; }
+main { max-width: 112em; }
+footer { display: none !important; }
+
+/* Hide slider min/max captions and the upload glyph for a cleaner look. */
+.slider_input_container .min_value,
+.slider_input_container .max_value,
+.icon-wrap .feather-upload { display: none; }
+
+input[type="number"] { appearance: textfield; text-align: center; }
+input[type="number"]::-webkit-inner-spin-button { appearance: none; }
+input[type="range"] { background: transparent; }
+
+[type="checkbox"], [type="radio"] { border-radius: 50%; width: 1.125rem; height: 1.125rem; }
+
+.reset-button { background: var(--background-fill-secondary); border: none; padding: 0; }
+
+/* Face galleries: dense grid of square crops. */
+.face-gallery .thumbnail-item { border: none; }
+.face-gallery .grid-container { grid-template-columns: repeat(7, 1fr); }
+.face-gallery .grid-wrap.fixed-height { min-height: unset; }
+.face-gallery .empty,
+.face-gallery .gallery-container { min-height: 7.25rem; }
+
+/* Checkerboard behind preview so letterboxing is visible. */
+.image-frame {
+  background-image: conic-gradient(#f2f2f2 90deg, #d6d6d6 90deg 180deg, #f2f2f2 180deg 270deg, #d6d6d6 270deg);
+  background-size: 1.25rem 1.25rem;
+  width: 100%;
+}
+.dark .image-frame {
+  background-image: conic-gradient(#262626 90deg, #1c1c1c 90deg 180deg, #262626 180deg 270deg, #1c1c1c 270deg);
+}
+.preview-image.is-landscape { position: sticky; top: 0; z-index: 100; }
+
+/* Terminal */
+.terminal textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+}
+
+/* Section headings in the options column. */
+.section-title { margin: 0.25rem 0 -0.25rem; }
+.section-title p {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+}
+
+.about h1 { font-size: 1.5rem; margin: 0; }
+.about p { margin: 0.25rem 0 0; font-size: 0.8rem; color: var(--neutral-500); }
+
+.toast-body { border: none; }
+.block .error { border: 2px solid; font-size: 0.75rem; text-transform: uppercase; }
+
+@media (max-width: 768px) {
+  .face-gallery .grid-container { grid-template-columns: repeat(4, 1fr); }
+}

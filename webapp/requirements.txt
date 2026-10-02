@@ -9,5 +9,6 @@ pillow
 av
 # QtCore only — the engine shares rope.qt's signal bus and parameter schema.
 PySide6-Essentials>=6.7
-gradio>=5,<7
+gradio==5.50.0
+gradio-rangeslider==0.0.8
 imageio-ffmpeg

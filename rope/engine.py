@@ -47,6 +47,34 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 class Face:
     embedding: np.ndarray   # (512,) ArcFace embedding
     thumbnail: np.ndarray   # 112x112x3 RGB uint8 aligned crop
+    kps: np.ndarray | None = None              # (5, 2) landmarks, image coords
+    bbox: tuple[int, int, int, int] | None = None  # x1, y1, x2, y2 estimate
+
+    def crop(self, rgb: np.ndarray, size: int = 128, margin: float = 0.25) -> np.ndarray:
+        """Square crop of this face from `rgb` (the image it was found in)."""
+        h, w = rgb.shape[:2]
+        x1, y1, x2, y2 = self.bbox or (0, 0, w, h)
+        mx, my = int((x2 - x1) * margin), int((y2 - y1) * margin)
+        x1, y1 = max(0, x1 - mx), max(0, y1 - my)
+        x2, y2 = min(w, x2 + mx), min(h, y2 + my)
+        region = rgb[y1:y2, x1:x2]
+        if region.size == 0:
+            region = rgb
+        side = min(region.shape[:2])
+        cy, cx = region.shape[0] // 2, region.shape[1] // 2
+        square = region[cy - side // 2: cy - side // 2 + side, cx - side // 2: cx - side // 2 + side]
+        return cv2.resize(square, (size, size), interpolation=cv2.INTER_AREA)
+
+
+def _bbox_from_kps(kps: np.ndarray, w: int, h: int) -> tuple[int, int, int, int]:
+    """Approximate face box from the 5 landmarks (eyes, nose, mouth corners)."""
+    center = kps.mean(axis=0)
+    eye_dist = float(np.linalg.norm(kps[1] - kps[0]))
+    eye_mouth = float(np.linalg.norm((kps[3] + kps[4]) / 2 - (kps[0] + kps[1]) / 2))
+    half = 1.15 * max(eye_dist, eye_mouth, 4.0)
+    cx, cy = float(center[0]), float(center[1]) - 0.1 * half
+    return (max(0, int(cx - half)), max(0, int(cy - half * 1.15)),
+            min(w, int(cx + half)), min(h, int(cy + half * 1.05)))
 
 
 class Cancelled(Exception):
@@ -149,6 +177,7 @@ class RopeEngine:
                 input_size=int(p.get("DetectInputSizeTextSel", 640)),
             )
 
+        pad = 0
         kpss = detect(img)
         if len(kpss) == 0:
             # Tightly cropped portraits (face filling the frame) defeat
@@ -157,12 +186,18 @@ class RopeEngine:
             img = torch.nn.functional.pad(img, (pad, pad, pad, pad))
             kpss = detect(img)
         faces = []
+        h, w = rgb.shape[:2]
         for kps in kpss:
             emb, crop = self.models.run_recognize(img, kps)
+            pts = np.asarray(kps, dtype=np.float32).reshape(-1, 2) - pad
             faces.append(Face(
                 embedding=np.asarray(emb, dtype=np.float32),
                 thumbnail=crop.cpu().numpy().astype(np.uint8),
+                kps=pts,
+                bbox=_bbox_from_kps(pts, w, h),
             ))
+        # Left-to-right, like FaceFusion's default face order.
+        faces.sort(key=lambda f: f.bbox[0])
         return faces
 
     def source_embedding(self, image_paths: Iterable[str], merge_mode: str | None = None) -> np.ndarray:
@@ -198,12 +233,23 @@ class RopeEngine:
             found.extend(self.analyze(rgb))
         return self.dedupe(found)
 
-    def set_assignments(self, pairs: Sequence[tuple[np.ndarray, np.ndarray]]) -> None:
+    def select_faces(self, source_emb: np.ndarray, mode: str = "many",
+                     references: Sequence[np.ndarray] = ()) -> None:
+        """mode 'many': swap every detected face with the source.
+        mode 'reference': swap only faces matching `references` (within
+        ThresholdSlider similarity)."""
+        if mode == "reference" and references:
+            self.set_assignments([(r, source_emb) for r in references])
+        else:
+            self.set_assignments([(None, source_emb)])
+
+    def set_assignments(self, pairs: Sequence[tuple[np.ndarray | None, np.ndarray]]) -> None:
         """pairs: (target face embedding, source embedding to put on it)."""
         slots = []
         for target_emb, source_emb in pairs:
             slots.append({
-                "Embedding": np.asarray(target_emb, dtype=np.float32),
+                "MatchAll": target_emb is None,
+                "Embedding": None if target_emb is None else np.asarray(target_emb, dtype=np.float32),
                 "SourceFaceAssignments": ["web"],
                 "AssignedEmbedding": np.asarray(source_emb, dtype=np.float32),
                 "Thumbnail": None,
@@ -246,6 +292,8 @@ class RopeEngine:
         progress: Callable[[int, int], None] | None = None,
         cancel: threading.Event | None = None,
         threads: int | None = None,
+        video_encoder: str = "libx264",
+        video_preset: str = "medium",
     ) -> str:
         """Swap every frame in [start_frame, end_frame) and encode an H.264
         MP4 with the source's audio track (if any)."""
@@ -268,11 +316,13 @@ class RopeEngine:
             "-i", "pipe:0",
             "-ss", f"{start / fps:.6f}", "-t", f"{n_frames / fps:.6f}", "-i", in_path,
             "-map", "0:v:0", "-map", "1:a:0?",
-            "-c:v", "libx264", "-crf", str(crf), "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-c:v", video_encoder, "-crf", str(crf), "-preset", video_preset, "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-shortest", "-movflags", "+faststart",
             out_path,
         ]
+        if video_encoder == "libx265":
+            cmd[-1:-1] = ["-tag:v", "hvc1"]  # playable in browsers / QuickTime
         enc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         cap = cv2.VideoCapture(in_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
