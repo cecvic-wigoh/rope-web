@@ -126,6 +126,62 @@ def web_proxy(path: str) -> str:
     return str(out)
 
 
+class SegmentEncoder:
+    """One continuous ffmpeg encode split into ~1 s MPEG-TS segments.
+
+    Unlike encoding each chunk separately, timestamps and the AAC audio
+    stream run continuously across segment boundaries, so HLS playback has
+    no seams. Feed RGB frames with write(); completed segments come back
+    from poll() as (path, duration)."""
+
+    def __init__(self, width: int, height: int, fps: float, workdir: str, *,
+                 source: str | None, start_seconds: float, segment_seconds: float = 1.0):
+        self.workdir = Path(workdir)
+        self.list_path = self.workdir / "segments.csv"
+        self._seen = 0
+        cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", f"{fps}",
+               "-i", "pipe:0"]
+        if source:
+            cmd += ["-ss", f"{start_seconds:.6f}", "-i", source, "-map", "0:v:0", "-map", "1:a:0?"]
+        gop = max(1, int(round(fps * segment_seconds)))
+        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "21",
+                "-pix_fmt", "yuv420p", "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+                "-force_key_frames", f"expr:gte(t,n_forced*{segment_seconds})",
+                "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k", "-shortest",
+                "-f", "segment", "-segment_time", f"{segment_seconds}", "-segment_format", "mpegts",
+                "-reset_timestamps", "0", "-segment_list", str(self.list_path),
+                "-segment_list_type", "csv", str(self.workdir / "seg%05d.ts")]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def write(self, frame: np.ndarray) -> None:
+        self.proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+
+    def poll(self) -> list[tuple[str, float]]:
+        if not self.list_path.exists():
+            return []
+        rows = [r.split(",") for r in self.list_path.read_text().splitlines() if r.strip()]
+        new = rows[self._seen:]
+        self._seen = len(rows)
+        out = []
+        for name, start, end in (r[:3] for r in new):
+            path = str(self.workdir / name)
+            CHUNK_DURATIONS[path] = float(end) - float(start)
+            out.append((path, CHUNK_DURATIONS[path]))
+        return out
+
+    def close(self) -> list[tuple[str, float]]:
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        self.proc.wait(timeout=60)
+        return self.poll()
+
+    def kill(self) -> None:
+        self.proc.kill()
+
+
 def encode_ts_chunk(frames: list[np.ndarray], fps: float, out_path: str, *, source: str | None,
                     start_seconds: float, offset_seconds: float) -> float:
     """Encode RGB frames (+ the matching slice of the source's audio) as

@@ -100,7 +100,6 @@ def update_frame_slider():
 # ----- live swapped playback ----------------------------------------------------
 
 LIVE_CANCEL = threading.Event()
-CHUNK_SECONDS = 1.0
 
 
 def _put(out: queue.Queue, item) -> bool:
@@ -115,84 +114,81 @@ def _put(out: queue.Queue, item) -> bool:
                 return False
 
 
+PREBUFFER_SEGMENTS = 2
+
+
 def _live_producer(out: queue.Queue, target: str, start: int, end: int | None,
                    max_size: tuple[int, int]) -> None:
-    """Swap + encode on dedicated threads (this one owns the GPU lock for the
-    whole run) and hand finished .ts chunk paths to the streaming generator.
+    """Swap frames on the GPU (this thread owns the GPU lock for the whole
+    run) and feed them to one continuous segmenting encoder; completed
+    ~1 s segments go to the streaming generator.
 
-    Keeps playback real-time: if the GPU swaps slower than the video's frame
-    rate, only every Nth frame is processed (N re-estimated each chunk) and
-    each chunk is timed to the source span it covers, so audio stays in sync.
-    """
-    encode_q: queue.Queue = queue.Queue(maxsize=2)
-
-    def encoder() -> None:
-        while True:
-            job = encode_q.get()
-            if job is None:
-                _put(out, None)
-                return
-            frames, rate, path, start_s, offset = job
-            try:
-                media_utils.encode_ts_chunk(frames, rate, path, source=target,
-                                            start_seconds=start_s, offset_seconds=offset)
-            except Exception as exc:
-                _put(out, exc)
-                continue
-            _put(out, path)  # keeps draining after a cancel so the producer never blocks
-
-    enc = threading.Thread(target=encoder, daemon=True)
-    enc.start()
+    The first ~0.5 s measures swap throughput; if the GPU can't keep up
+    with the video's frame rate, every Nth frame is used for the rest of the
+    run so playback stays real-time (audio is always complete)."""
+    enc = None
     try:
         eng = state.get_engine()
         info = state.get_item("video_info") or {}
         fps = float(info.get("fps") or 25.0)
-        # Decode from the light web copy when available (same frame count/timing).
         try:
-            src = media_utils.web_proxy(target)
+            src = media_utils.web_proxy(target)  # light 720p copy decodes fastest
         except Exception:
             src = target
-        stride = [2 if fps > 20 else 1]
         workdir = tempfile.mkdtemp(prefix="live-", dir=media_utils.CACHE_DIR)
         with eng.lock:
             if not state.apply_to_engine(eng):
                 _put(out, RuntimeError("Add a source face image first."))
                 return
-            buf: list[np.ndarray] = []
-            first_idx = last_idx = start
-            offset, n = 0.0, 0
-            chunk_t0 = time.time()
-
-            def flush(final: bool = False) -> None:
-                nonlocal buf, offset, n, chunk_t0
-                span = (last_idx - first_idx + stride[0]) / fps   # seconds of source covered
-                rate = len(buf) / span
-                encode_q.put((buf, rate, f"{workdir}/chunk{n:05d}.ts", first_idx / fps, offset))
-                swap_fps = len(buf) / max(time.time() - chunk_t0, 1e-6)
-                offset += span
-                n += 1
-                if not final:
-                    # Next step N so fps/N stays ~15% under what the GPU sustains.
-                    stride[0] = int(min(6, max(1, np.ceil(fps / max(swap_fps * 0.85, 1e-6)))))
-                    state.log(f"Live: frame {last_idx} — GPU {swap_fps:.1f} fps, playing "
+            stride = [1]
+            next_idx = start  # next source frame due in the output
+            probe: list[tuple[int, np.ndarray]] = []
+            probe_len = max(6, int(fps * 0.5))
+            t0 = time.time()
+            frames = eng.iter_swapped_frames(src, start, end, max_size=max_size,
+                                             cancel=LIVE_CANCEL, stride=lambda: stride[0])
+            for idx, frame in frames:
+                if enc is None:
+                    probe.append((idx, frame))
+                    if len(probe) < probe_len:
+                        continue
+                    rate = len(probe) / max(time.time() - t0, 1e-6)
+                    stride[0] = int(min(4, max(1, np.ceil(fps / (rate * 0.85)))))
+                    h, w = frame.shape[:2]
+                    enc = media_utils.SegmentEncoder(w, h, fps / stride[0], workdir, source=target,
+                                                     start_seconds=start / fps)
+                    state.log(f"Live: GPU swaps {rate:.1f} fps — playing "
                               f"{fps / stride[0]:.0f} of {fps:.0f} fps", replace_prefix="Live:")
-                buf = []
-                chunk_t0 = time.time()
-
-            for idx, frame in eng.iter_swapped_frames(src, start, end, max_size=max_size,
-                                                      cancel=LIVE_CANCEL, stride=lambda: stride[0]):
-                if not buf:
-                    first_idx = idx
-                last_idx = idx
-                buf.append(frame)
-                if (last_idx - first_idx + stride[0]) / fps >= CHUNK_SECONDS:
-                    flush()
-            if buf and not LIVE_CANCEL.is_set():
-                flush(final=True)
+                    pending = probe
+                else:
+                    pending = [(idx, frame)]
+                for i, f in pending:
+                    # Keep one frame per `stride` source frames; drops frames
+                    # that were already in flight when the stride was chosen.
+                    if i >= next_idx:
+                        enc.write(f)
+                        next_idx = i + stride[0]
+                for path, _dur in enc.poll():
+                    if not _put(out, path):
+                        return
+            if enc is None and probe and not LIVE_CANCEL.is_set():  # clip shorter than the probe
+                h, w = probe[0][1].shape[:2]
+                enc = media_utils.SegmentEncoder(w, h, fps, workdir, source=target,
+                                                 start_seconds=start / fps)
+                for _, f in probe:
+                    enc.write(f)
+        if enc is not None:
+            if LIVE_CANCEL.is_set():
+                enc.kill()
+            else:
+                for path, _dur in enc.close():
+                    _put(out, path)
     except Exception as exc:  # surfaced by the generator
+        if enc is not None:
+            enc.kill()
         _put(out, exc)
     finally:
-        encode_q.put(None)
+        _put(out, None)
 
 
 def live_play():
@@ -212,6 +208,7 @@ def live_play():
     threading.Thread(target=_live_producer, args=(chunks, target, start, end, (max_w, max_h)),
                      daemon=True).start()
     finished = False
+    held: list[str] | None = []
     try:
         while True:
             item = chunks.get()
@@ -220,7 +217,16 @@ def live_play():
                 break
             if isinstance(item, Exception):
                 raise gr.Error(str(item))
+            # Hold only the first segments so playback starts with a cushion.
+            if held is not None:
+                held.append(item)
+                if len(held) >= PREBUFFER_SEGMENTS:
+                    yield from held
+                    held = None
+                continue
             yield item
+        if held:
+            yield from held
     finally:
         if not finished:
             LIVE_CANCEL.set()  # stopped, errored or tab closed: release the GPU
