@@ -156,9 +156,15 @@ def _live_producer(out: queue.Queue, target: str, start: int, end: int | None,
                     if len(probe) < probe_len:
                         continue
                     rate = (len(probe) - warmup) / max(time.time() - t0, 1e-6)
-                    # Full frame rate whenever the GPU keeps up (the 2-segment
-                    # pre-buffer absorbs small dips); otherwise every Nth frame.
-                    stride[0] = int(min(4, max(1, np.ceil(fps / (rate * 0.95)))))
+                    # Full frame rate if the GPU reaches >= 90% of it: the
+                    # player pre-buffers enough to cover the shortfall over
+                    # the clip (capped). Clearly slower GPUs use every Nth frame.
+                    stride[0] = 1 if rate >= 0.9 * fps else int(min(4, np.ceil(fps / (rate * 0.95))))
+                    total = (end or int(info.get("frames") or 0)) - start
+                    remaining_s = max(total, 0) / fps
+                    out_rate = rate * stride[0]  # source frames covered per second
+                    shortfall = max(0.0, remaining_s * (1 - out_rate / fps))
+                    _put(out, ("prebuffer", int(min(8, max(PREBUFFER_SEGMENTS, np.ceil(shortfall) + 1)))))
                     h, w = frame.shape[:2]
                     enc = media_utils.SegmentEncoder(w, h, fps / stride[0], workdir, source=target,
                                                      start_seconds=start / fps)
@@ -215,6 +221,7 @@ def live_play():
     threading.Thread(target=_live_producer, args=(chunks, target, start, end, (max_w, max_h)),
                      daemon=True).start()
     finished = False
+    prebuffer = PREBUFFER_SEGMENTS
     held: list[str] | None = []
     try:
         while True:
@@ -224,10 +231,13 @@ def live_play():
                 break
             if isinstance(item, Exception):
                 raise gr.Error(str(item))
+            if isinstance(item, tuple) and item[0] == "prebuffer":
+                prebuffer = item[1]
+                continue
             # Hold only the first segments so playback starts with a cushion.
             if held is not None:
                 held.append(item)
-                if len(held) >= PREBUFFER_SEGMENTS:
+                if len(held) >= prebuffer:
                     yield from held
                     held = None
                 continue
