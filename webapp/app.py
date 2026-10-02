@@ -26,6 +26,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Rope web app")
     ap.add_argument("--models-dir", default=os.environ.get("ROPE_MODELS", str(REPO_ROOT / "models")))
     ap.add_argument("--output-dir", default=os.environ.get("ROPE_OUTPUT_DIR", str(REPO_ROOT / "outputs")))
+    ap.add_argument("--inputs-dir", default=os.environ.get("ROPE_INPUTS_DIR", str(REPO_ROOT / "inputs")),
+                    help="Server-side folder of target media, selectable in the UI (for large videos).")
     ap.add_argument("--config-dir", default=os.environ.get("ROPE_HOME"),
                     help="Where presets/ live (shared with the desktop app).")
     ap.add_argument("--backend", choices=["cuda", "tensorrt"], default=os.environ.get("ROPE_BACKEND", "cuda"),
@@ -43,6 +45,7 @@ def main(argv=None) -> None:
         from rope.qt import paths
         paths.set_config_dir(args.config_dir)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    Path(args.inputs_dir).mkdir(parents=True, exist_ok=True)
 
     from webapp.ui import layout, state
 
@@ -72,7 +75,7 @@ def main(argv=None) -> None:
         server_port=args.port,
         share=args.share,
         auth=auth,
-        allowed_paths=[str(Path(args.output_dir).resolve())],
+        allowed_paths=[str(Path(args.output_dir).resolve()), str(Path(args.inputs_dir).resolve())],
         max_file_size="4gb",
         show_error=True,
         show_api=False,

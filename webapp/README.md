@@ -16,6 +16,15 @@ A browser UI over Rope's swap pipeline. It uses the same models and parameters a
 
 To keep it running after you close the terminal, use `nohup python webapp/app.py > rope.log 2>&1 &`.
 
+### Large videos
+
+Browser uploads go through Lightning's proxy at roughly your upload speed; a 500 MB phone video can take many minutes. For large files, copy them into `rope-web/inputs/` on the Studio instead, then pick them under **TARGET → Or pick from inputs folder** (click ↻ to refresh the list). Ways to copy:
+- drag the file into the `rope-web/inputs` folder in the Studio's file browser, or
+- from your computer, run:
+  ```bash
+  lightning studio cp ./video.mp4 rope-web/inputs/ --name rope-web --teamspace <owner>/<teamspace>
+  ```
+
 ## Using it
 
 The interface follows FaceFusion's three-column layout:

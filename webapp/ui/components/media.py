@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import gradio as gr
 
 from rope.engine import is_image
@@ -35,16 +37,43 @@ def update_source(files):
 
 # ----- target -----------------------------------------------------------------
 
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+BROWSER_PLAYABLE = {".mp4", ".webm"}
+
+
+def list_inputs() -> list[str]:
+    """Image/video files in the server-side inputs folder (for big videos:
+    copy them onto the Studio instead of uploading through the browser)."""
+    folder = Path(state.ARGS.inputs_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    files = [p for p in sorted(folder.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+             if p.is_file() and (is_image(str(p)) or p.suffix.lower() in VIDEO_EXTS)]
+    return [p.name for p in files]
+
+
 def render_target() -> None:
     core.register("target_file", gr.File(
         label="TARGET", file_types=["image", "video"]))
+    with gr.Row():
+        core.register("target_server_dropdown", gr.Dropdown(
+            label="OR PICK FROM INPUTS FOLDER", choices=list_inputs(), value=None, scale=4))
+        core.register("target_server_refresh", gr.Button("↻", size="sm", scale=0, min_width=48))
     core.register("target_image", gr.Image(show_label=False, visible=False, interactive=False))
     core.register("target_video", gr.Video(show_label=False, visible=False, interactive=False))
 
 
 def update_target(file):
     paths = _paths(file)
-    path = paths[0] if paths else None
+    return set_target(paths[0] if paths else None)
+
+
+def update_target_from_inputs(name: str | None):
+    if not name:
+        return gr.update(), gr.update()
+    return set_target(str(Path(state.ARGS.inputs_dir) / name))
+
+
+def set_target(path: str | None):
     state.set_item("target_path", path)
     state.set_item("reference_embedding", None)
     state.set_item("reference_face_position", 0)
@@ -60,6 +89,11 @@ def update_target(file):
         state.set_item("video_info", info)
         state.log(f"Target video: {path.rsplit('/', 1)[-1]} — {info['width']}x{info['height']}, "
                   f"{info['fps']:.2f} fps, {info['frames']} frames")
+        if Path(path).suffix.lower() not in BROWSER_PLAYABLE:
+            # Gradio would re-encode the whole file for the player; show a
+            # still instead — processing reads the original either way.
+            from rope.engine import read_frame
+            return gr.Image(value=read_frame(path, 0), visible=True), gr.Video(value=None, visible=False)
         return gr.Image(value=None, visible=False), gr.Video(value=path, visible=True)
     return gr.Image(value=None, visible=False), gr.Video(value=None, visible=False)
 
@@ -81,16 +115,23 @@ def listen() -> None:
     src = core.get_component("source_file")
     refresh(src.change(update_source, inputs=src, outputs=core.get_component("source_image"), queue=False))
 
+    target_outputs = [core.get_component("target_image"), core.get_component("target_video")]
+
+    def after_target(event) -> None:
+        event = event.then(preview.update_frame_slider, outputs=core.get_component("preview_frame_slider"),
+                           queue=False)
+        event = event.then(face_tools.update_trim, outputs=core.get_component("trim_frame_slider"), queue=False)
+        event = event.then(face_selector.update_gallery, outputs=core.get_component("reference_face_gallery"),
+                           show_progress="hidden", **GPU)
+        event.then(preview.update_preview, outputs=core.get_component("preview_image"),
+                   show_progress="hidden", **GPU)
+
     tgt = core.get_component("target_file")
-    event = tgt.change(update_target, inputs=tgt, outputs=[core.get_component("target_image"),
-                                                           core.get_component("target_video")], queue=False)
-    event = event.then(preview.update_frame_slider, outputs=core.get_component("preview_frame_slider"),
-                       queue=False)
-    event = event.then(face_tools.update_trim, outputs=core.get_component("trim_frame_slider"), queue=False)
-    event = event.then(face_selector.update_gallery, outputs=core.get_component("reference_face_gallery"),
-                       show_progress="hidden", **GPU)
-    event.then(preview.update_preview, outputs=core.get_component("preview_image"),
-               show_progress="hidden", **GPU)
+    after_target(tgt.change(update_target, inputs=tgt, outputs=target_outputs, queue=False))
+    picker = core.get_component("target_server_dropdown")
+    after_target(picker.change(update_target_from_inputs, inputs=picker, outputs=target_outputs, queue=False))
+    core.get_component("target_server_refresh").click(
+        lambda: gr.Dropdown(choices=list_inputs()), outputs=picker, queue=False)
 
     out = core.get_component("output_path_textbox")
     out.change(lambda v: state.set_item("output_path", v), inputs=out, queue=False)
