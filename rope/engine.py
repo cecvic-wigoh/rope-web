@@ -132,13 +132,23 @@ class RopeEngine:
         """Detect + embed every face in an RGB HxWx3 uint8 image."""
         p = self.vm.parameters
         img = torch.from_numpy(np.ascontiguousarray(rgb, dtype=np.uint8)).to("cuda").permute(2, 0, 1)
-        kpss = self.models.run_detect(
-            img,
-            str(p.get("DetectTypeTextSel", "Retinaface")),
-            max_num=max_num,
-            score=float(p.get("DetectScoreSlider", 50)) / 100.0,
-            input_size=int(p.get("DetectInputSizeTextSel", 640)),
-        )
+
+        def detect(t):
+            return self.models.run_detect(
+                t,
+                str(p.get("DetectTypeTextSel", "Retinaface")),
+                max_num=max_num,
+                score=float(p.get("DetectScoreSlider", 50)) / 100.0,
+                input_size=int(p.get("DetectInputSizeTextSel", 640)),
+            )
+
+        kpss = detect(img)
+        if len(kpss) == 0:
+            # Tightly cropped portraits (face filling the frame) defeat
+            # RetinaFace/SCRFD; retry with a black margin around the image.
+            pad = max(img.shape[1], img.shape[2]) // 4
+            img = torch.nn.functional.pad(img, (pad, pad, pad, pad))
+            kpss = detect(img)
         faces = []
         for kps in kpss:
             emb, crop = self.models.run_recognize(img, kps)
