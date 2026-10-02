@@ -22,6 +22,14 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 REQUIRED_MODELS = ["det_10g.onnx", "w600k_r50.onnx", "inswapper_128.fp16.onnx"]
 
 
+def _default_backend() -> str:
+    try:
+        import importlib.util
+        return "tensorrt" if importlib.util.find_spec("tensorrt_libs") else "cuda"
+    except Exception:
+        return "cuda"
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Rope web app")
     ap.add_argument("--models-dir", default=os.environ.get("ROPE_MODELS", str(REPO_ROOT / "models")))
@@ -30,8 +38,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="Server-side folder of target media, selectable in the UI (for large videos).")
     ap.add_argument("--config-dir", default=os.environ.get("ROPE_HOME"),
                     help="Where presets/ live (shared with the desktop app).")
-    ap.add_argument("--backend", choices=["cuda", "tensorrt"], default=os.environ.get("ROPE_BACKEND", "cuda"),
-                    help="cuda = fast startup; tensorrt = faster frames, slow first build.")
+    ap.add_argument("--backend", choices=["cuda", "tensorrt"], default=os.environ.get("ROPE_BACKEND", _default_backend()),
+                    help="tensorrt (default when installed): ~1.6x faster; first start compiles engines "
+                         "for a few minutes, cached afterwards. cuda: no compile step.")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 7860)))
     ap.add_argument("--share", action="store_true", help="Also create a public gradio.live link.")

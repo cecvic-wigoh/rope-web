@@ -13,6 +13,13 @@ if ! python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 
 fi
 
 pip install -r webapp/requirements.txt
+
+# TensorRT (~1.6x faster swaps). Match the CUDA major onnxruntime-gpu was built for.
+ORT_CAPI=$(python -c "import onnxruntime,os;print(os.path.join(os.path.dirname(onnxruntime.__file__),'capi'))")
+CUDA_MAJOR=$(ldd "$ORT_CAPI/libonnxruntime_providers_tensorrt.so" 2>/dev/null | grep -oE 'libcudart\.so\.[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)
+if [ -n "$CUDA_MAJOR" ]; then
+  pip install "tensorrt-cu${CUDA_MAJOR}==10.16.1.11" || echo "TensorRT install failed - the app will use CUDA instead."
+fi
 python webapp/download_models.py --models-dir models
 
 python - <<'PY'

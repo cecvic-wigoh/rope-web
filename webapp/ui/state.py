@@ -71,7 +71,9 @@ def init_state(args) -> None:
         detector_angle="0",
         processing=False,
     )
-    STATE["params"]["ThreadsSlider"] = 2
+    # Benchmarked on a T4 (TensorRT, shared sessions): 4 threads ~30 fps at
+    # 720p; more threads add no speed on 4-core machines.
+    STATE["params"]["ThreadsSlider"] = 4
 
 
 def get_item(key: str, default: Any = None) -> Any:
