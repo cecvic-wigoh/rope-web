@@ -296,9 +296,12 @@ class RopeEngine:
         threads: int | None = None,
         max_size: tuple[int, int] | None = None,
         cancel: threading.Event | None = None,
+        stride: int | Callable[[], int] = 1,
     ):
         """Yield (frame_index, swapped RGB frame) in order, swapping on a
-        thread pool. max_size=(w, h) downscales frames first (live preview)."""
+        thread pool. max_size=(w, h) downscales frames first (live preview).
+        stride: process every Nth frame; a callable is re-read per frame so
+        live playback can adapt to GPU throughput."""
         workers = max(1, int(threads or self.vm.parameters.get("ThreadsSlider", 2)))
         total = video_info(in_path)["frames"]
         end = total if end_frame is None or end_frame <= 0 else min(end_frame, total)
@@ -318,7 +321,11 @@ class RopeEngine:
                         if max_size:
                             rgb = fit_within(rgb, *max_size)
                         pending.append((idx, pool.submit(self.swap_frame, rgb, idx)))
-                        idx += 1
+                        step = max(1, int(stride() if callable(stride) else stride))
+                        for _ in range(step - 1):
+                            if not cap.grab():  # skip without converting
+                                break
+                        idx += step
                     if not pending:
                         return
                     i, fut = pending.popleft()

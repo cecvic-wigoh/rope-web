@@ -117,50 +117,82 @@ def _put(out: queue.Queue, item) -> bool:
 
 def _live_producer(out: queue.Queue, target: str, start: int, end: int | None,
                    max_size: tuple[int, int]) -> None:
-    """Swap + encode chunks on a dedicated thread (it owns the GPU lock for
-    the whole run) and hand finished .ts paths to the streaming generator."""
+    """Swap + encode on dedicated threads (this one owns the GPU lock for the
+    whole run) and hand finished .ts chunk paths to the streaming generator.
+
+    Keeps playback real-time: if the GPU swaps slower than the video's frame
+    rate, only every Nth frame is processed (N re-estimated each chunk) and
+    each chunk is timed to the source span it covers, so audio stays in sync.
+    """
+    encode_q: queue.Queue = queue.Queue(maxsize=2)
+
+    def encoder() -> None:
+        while True:
+            job = encode_q.get()
+            if job is None:
+                _put(out, None)
+                return
+            frames, rate, path, start_s, offset = job
+            try:
+                media_utils.encode_ts_chunk(frames, rate, path, source=target,
+                                            start_seconds=start_s, offset_seconds=offset)
+            except Exception as exc:
+                _put(out, exc)
+                continue
+            _put(out, path)  # keeps draining after a cancel so the producer never blocks
+
+    enc = threading.Thread(target=encoder, daemon=True)
+    enc.start()
     try:
         eng = state.get_engine()
         info = state.get_item("video_info") or {}
         fps = float(info.get("fps") or 25.0)
-        chunk_len = max(1, int(round(fps * CHUNK_SECONDS)))
+        # Decode from the light web copy when available (same frame count/timing).
+        try:
+            src = media_utils.web_proxy(target)
+        except Exception:
+            src = target
+        stride = [2 if fps > 20 else 1]
         workdir = tempfile.mkdtemp(prefix="live-", dir=media_utils.CACHE_DIR)
         with eng.lock:
             if not state.apply_to_engine(eng):
                 _put(out, RuntimeError("Add a source face image first."))
                 return
             buf: list[np.ndarray] = []
-            first_idx = start
-            offset = 0.0
-            t0, done = time.time(), 0
-            n = 0
-            for idx, frame in eng.iter_swapped_frames(target, start, end, max_size=max_size,
-                                                      cancel=LIVE_CANCEL):
+            first_idx = last_idx = start
+            offset, n = 0.0, 0
+            chunk_t0 = time.time()
+
+            def flush(final: bool = False) -> None:
+                nonlocal buf, offset, n, chunk_t0
+                span = (last_idx - first_idx + stride[0]) / fps   # seconds of source covered
+                rate = len(buf) / span
+                encode_q.put((buf, rate, f"{workdir}/chunk{n:05d}.ts", first_idx / fps, offset))
+                swap_fps = len(buf) / max(time.time() - chunk_t0, 1e-6)
+                offset += span
+                n += 1
+                if not final:
+                    # Next step N so fps/N stays ~15% under what the GPU sustains.
+                    stride[0] = int(min(6, max(1, np.ceil(fps / max(swap_fps * 0.85, 1e-6)))))
+                    state.log(f"Live: frame {last_idx} — GPU {swap_fps:.1f} fps, playing "
+                              f"{fps / stride[0]:.0f} of {fps:.0f} fps", replace_prefix="Live:")
+                buf = []
+                chunk_t0 = time.time()
+
+            for idx, frame in eng.iter_swapped_frames(src, start, end, max_size=max_size,
+                                                      cancel=LIVE_CANCEL, stride=lambda: stride[0]):
                 if not buf:
                     first_idx = idx
+                last_idx = idx
                 buf.append(frame)
-                done += 1
-                if len(buf) == chunk_len:
-                    path = f"{workdir}/chunk{n:05d}.ts"
-                    offset += media_utils.encode_ts_chunk(buf, fps, path, source=target,
-                                                          start_seconds=first_idx / fps,
-                                                          offset_seconds=offset)
-                    n += 1
-                    if not _put(out, path):
-                        return
-                    buf = []
-                    rate = done / max(time.time() - t0, 1e-6)
-                    state.log(f"Live: frame {idx} — swapping at {rate:.1f} fps "
-                              f"(video is {fps:.0f} fps)", replace_prefix="Live:")
+                if (last_idx - first_idx + stride[0]) / fps >= CHUNK_SECONDS:
+                    flush()
             if buf and not LIVE_CANCEL.is_set():
-                path = f"{workdir}/chunk{n:05d}.ts"
-                media_utils.encode_ts_chunk(buf, fps, path, source=target,
-                                            start_seconds=first_idx / fps, offset_seconds=offset)
-                _put(out, path)
+                flush(final=True)
     except Exception as exc:  # surfaced by the generator
         _put(out, exc)
     finally:
-        _put(out, None)
+        encode_q.put(None)
 
 
 def live_play():
