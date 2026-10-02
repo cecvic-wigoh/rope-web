@@ -59,6 +59,23 @@ def install() -> None:
 
     gr.Video.get_video_duration_ffprobe = staticmethod(duration)
 
+    # Gradio checks playability with ffprobe and re-encodes "unplayable"
+    # files in full. Our players only receive H.264 MP4 (web_proxy output
+    # or our renders); anything else is converted with web_proxy.
+    from gradio import processing_utils
+
+    def video_is_playable(path: str) -> bool:
+        return Path(path).suffix.lower() in (".mp4", ".webm", ".ogg")
+
+    def convert_video_to_playable_mp4(path: str) -> str:
+        try:
+            return web_proxy(path)
+        except Exception:
+            return path
+
+    processing_utils.video_is_playable = video_is_playable
+    processing_utils.convert_video_to_playable_mp4 = convert_video_to_playable_mp4
+
 
 def _probe(path: str) -> dict:
     import cv2
