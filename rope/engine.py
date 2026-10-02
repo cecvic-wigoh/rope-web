@@ -116,6 +116,13 @@ class RopeEngine:
         for name, value in values.items():
             if name in PARAMETER_BY_NAME and name in params:
                 params[name] = _coerce(name, value)
+        for name, value in params.items():
+            p = PARAMETER_BY_NAME.get(name)
+            # Integer-step sliders must stay ints: swap_core uses several
+            # (Border*, blur sizes) as slice indices / kernel sizes. Web
+            # sliders and saved JSON deliver floats.
+            if p is not None and p.kind == "slider" and float(p.inc).is_integer():
+                params[name] = int(round(float(value)))
         self.vm.parameters = params
         mode = str(params.get("ModelSessionsTextSel", "Shared"))
         if hasattr(self.models, "set_model_session_mode"):

@@ -407,6 +407,7 @@ def main(argv=None) -> None:
         auth=auth,
         allowed_paths=[ARGS.output_dir],
         max_file_size="4gb",
+        show_error=True,
     )
 
 
