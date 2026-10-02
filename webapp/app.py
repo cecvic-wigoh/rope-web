@@ -47,8 +47,9 @@ def main(argv=None) -> None:
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     Path(args.inputs_dir).mkdir(parents=True, exist_ok=True)
 
-    from webapp.ui import layout, state
+    from webapp.ui import layout, media_utils, state
 
+    media_utils.install()
     state.init_state(args)
     state.capture_stdout()
     missing = [m for m in REQUIRED_MODELS if not (Path(args.models_dir) / m).is_file()]
@@ -75,7 +76,8 @@ def main(argv=None) -> None:
         server_port=args.port,
         share=args.share,
         auth=auth,
-        allowed_paths=[str(Path(args.output_dir).resolve()), str(Path(args.inputs_dir).resolve())],
+        allowed_paths=[str(Path(args.output_dir).resolve()), str(Path(args.inputs_dir).resolve()),
+                       str(media_utils.CACHE_DIR.resolve())],
         max_file_size="4gb",
         show_error=True,
         show_api=False,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import gradio as gr
@@ -89,13 +90,32 @@ def set_target(path: str | None):
         state.set_item("video_info", info)
         state.log(f"Target video: {path.rsplit('/', 1)[-1]} — {info['width']}x{info['height']}, "
                   f"{info['fps']:.2f} fps, {info['frames']} frames")
-        if Path(path).suffix.lower() not in BROWSER_PLAYABLE:
-            # Gradio would re-encode the whole file for the player; show a
-            # still instead — processing reads the original either way.
-            from rope.engine import read_frame
-            return gr.Image(value=read_frame(path, 0), visible=True), gr.Video(value=None, visible=False)
-        return gr.Image(value=None, visible=False), gr.Video(value=path, visible=True)
+        # Show a still right away; target_player() swaps in a lightweight
+        # web copy for smooth playback once it's ready.
+        from rope.engine import read_frame
+        return gr.Image(value=read_frame(path, 0), visible=True), gr.Video(value=None, visible=False)
     return gr.Image(value=None, visible=False), gr.Video(value=None, visible=False)
+
+
+def target_player():
+    """Background step after a video target loads: build a small fast-start
+    copy for the browser player (the swap always reads the original)."""
+    from webapp.ui import media_utils
+
+    path = state.get_item("target_path")
+    if not path or is_image(path):
+        return gr.update(), gr.update()
+    t0 = time.time()
+    try:
+        proxy = media_utils.web_proxy(path)
+    except Exception as exc:
+        state.log(f"Player preview unavailable: {exc}")
+        return gr.update(), gr.update()
+    if state.get_item("target_path") != path:  # target changed meanwhile
+        return gr.update(), gr.update()
+    if proxy != path:
+        state.log(f"Prepared smooth-playback copy in {time.time() - t0:.1f}s")
+    return gr.Image(value=None, visible=False), gr.Video(value=proxy, visible=True)
 
 
 # ----- output -----------------------------------------------------------------
@@ -105,6 +125,7 @@ def render_output() -> None:
         label="OUTPUT PATH", value=state.STATE["output_path"], max_lines=1))
     core.register("output_image", gr.Image(label="OUTPUT", visible=False, interactive=False))
     core.register("output_video", gr.Video(label="OUTPUT", interactive=False))
+    core.register("output_download", gr.File(label="DOWNLOAD (FULL QUALITY)", interactive=False, visible=False))
 
 
 # ----- events -----------------------------------------------------------------
@@ -118,7 +139,10 @@ def listen() -> None:
     target_outputs = [core.get_component("target_image"), core.get_component("target_video")]
 
     def after_target(event) -> None:
-        event = event.then(preview.update_frame_slider, outputs=core.get_component("preview_frame_slider"),
+        event = event.then(preview.update_frame_slider,
+                           outputs=[core.get_component("preview_frame_slider"),
+                                    core.get_component("live_controls_row"),
+                                    core.get_component("live_video")],
                            queue=False)
         event = event.then(face_tools.update_trim, outputs=core.get_component("trim_frame_slider"), queue=False)
         event = event.then(face_selector.update_gallery, outputs=core.get_component("reference_face_gallery"),
@@ -126,10 +150,18 @@ def listen() -> None:
         event.then(preview.update_preview, outputs=core.get_component("preview_image"),
                    show_progress="hidden", **GPU)
 
+    def player(event) -> None:
+        event.then(target_player, outputs=target_outputs, show_progress="hidden",
+                   concurrency_limit=1, concurrency_id="transcode")
+
     tgt = core.get_component("target_file")
-    after_target(tgt.change(update_target, inputs=tgt, outputs=target_outputs, queue=False))
+    ev = tgt.change(update_target, inputs=tgt, outputs=target_outputs, queue=False)
+    after_target(ev)
+    player(ev)
     picker = core.get_component("target_server_dropdown")
-    after_target(picker.change(update_target_from_inputs, inputs=picker, outputs=target_outputs, queue=False))
+    ev = picker.change(update_target_from_inputs, inputs=picker, outputs=target_outputs, queue=False)
+    after_target(ev)
+    player(ev)
     core.get_component("target_server_refresh").click(
         lambda: gr.Dropdown(choices=list_inputs()), outputs=picker, queue=False)
 

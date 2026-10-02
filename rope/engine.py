@@ -287,6 +287,49 @@ class RopeEngine:
             out = cv2.resize(out, (w, h), interpolation=cv2.INTER_AREA)
         return out
 
+    def iter_swapped_frames(
+        self,
+        in_path: str,
+        start_frame: int = 0,
+        end_frame: int | None = None,
+        *,
+        threads: int | None = None,
+        max_size: tuple[int, int] | None = None,
+        cancel: threading.Event | None = None,
+    ):
+        """Yield (frame_index, swapped RGB frame) in order, swapping on a
+        thread pool. max_size=(w, h) downscales frames first (live preview)."""
+        workers = max(1, int(threads or self.vm.parameters.get("ThreadsSlider", 2)))
+        total = video_info(in_path)["frames"]
+        end = total if end_frame is None or end_frame <= 0 else min(end_frame, total)
+        cap = cv2.VideoCapture(in_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, start_frame))
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pending: deque = deque()
+                idx = start_frame
+                while True:
+                    while idx < end and len(pending) < workers * 2:
+                        ok, bgr = cap.read()
+                        if not ok:
+                            end = idx
+                            break
+                        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                        if max_size:
+                            rgb = fit_within(rgb, *max_size)
+                        pending.append((idx, pool.submit(self.swap_frame, rgb, idx)))
+                        idx += 1
+                    if not pending:
+                        return
+                    i, fut = pending.popleft()
+                    yield i, fut.result()
+                    if cancel is not None and cancel.is_set():
+                        for _, f in pending:
+                            f.cancel()
+                        return
+        finally:
+            cap.release()
+
     def render_image(self, in_path: str, out_path: str) -> str:
         with self.lock:
             result = self.swap_frame(read_image_rgb(in_path))
@@ -391,6 +434,16 @@ def video_info(path: str) -> dict[str, Any]:
     }
     cap.release()
     return info
+
+
+def fit_within(rgb: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
+    """Downscale to fit max_w x max_h (even dimensions, for H.264)."""
+    h, w = rgb.shape[:2]
+    scale = min(max_w / w, max_h / h, 1.0)
+    nw, nh = int(w * scale) // 2 * 2, int(h * scale) // 2 * 2
+    if (nw, nh) == (w, h):
+        return rgb
+    return cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_AREA)
 
 
 def read_frame(path: str, index: int) -> np.ndarray:

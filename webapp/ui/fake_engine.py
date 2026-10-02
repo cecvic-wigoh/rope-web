@@ -56,6 +56,18 @@ class FakeEngine:
         time.sleep(0.05)
         return out
 
+    def iter_swapped_frames(self, in_path, start_frame=0, end_frame=None, *, threads=None,
+                            max_size=None, cancel=None):
+        total = E.video_info(in_path)["frames"]
+        end = total if not end_frame else min(end_frame, total)
+        for i in range(start_frame, end):
+            rgb = E.read_frame(in_path, i)
+            if max_size:
+                rgb = E.fit_within(rgb, *max_size)
+            yield i, self.swap_frame(rgb, i)
+            if cancel is not None and cancel.is_set():
+                return
+
     def render_image(self, in_path, out_path):
         cv2.imwrite(out_path, cv2.cvtColor(self.swap_frame(E.read_image_rgb(in_path)), cv2.COLOR_RGB2BGR))
         return out_path

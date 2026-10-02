@@ -44,14 +44,14 @@ def start(consent: bool):
 def run(consent: bool):
     idle = (gr.Button(visible=True), gr.Button(visible=False))
     if not consent or not state.get_item("source_paths") or not state.get_item("target_path"):
-        return *idle, gr.update(), gr.update()
+        return *idle, gr.update(), gr.update(), gr.update()
     target = state.get_item("target_path")
     out_dir = Path(state.get_item("output_path") or state.ARGS.output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(target).stem
     if state.CANCEL.is_set():
         state.log("Processing stopped.")
-        return *idle, gr.update(), gr.update()
+        return *idle, gr.update(), gr.update(), gr.update()
     state.set_item("processing", True)
     eng = state.get_engine()
     t0 = time.time()
@@ -64,7 +64,8 @@ def run(consent: bool):
                 state.log("Processing image…")
                 eng.render_image(target, out)
                 state.log(f"Saved {out} in {time.time() - t0:.1f}s")
-                return *idle, gr.Image(value=out, visible=True), gr.Video(value=None, visible=False)
+                return (*idle, gr.Image(value=out, visible=True), gr.Video(value=None, visible=False),
+                        gr.File(value=out, visible=True))
 
             out = str(out_dir / f"{stem}-rope-{int(time.time())}.mp4")
             start_f = int(state.get_item("trim_start") or 0)
@@ -81,10 +82,16 @@ def run(consent: bool):
                 video_preset=state.get_item("video_preset"),
             )
             state.log(f"Saved {out} in {time.time() - t0:.1f}s")
-            return *idle, gr.Image(value=None, visible=False), gr.Video(value=out, visible=True)
+            from webapp.ui import media_utils
+            try:
+                player = media_utils.web_proxy(out)
+            except Exception:
+                player = out
+            return (*idle, gr.Image(value=None, visible=False), gr.Video(value=player, visible=True),
+                    gr.File(value=out, visible=True))
     except Cancelled:
         state.log("Processing stopped.")
-        return *idle, gr.update(), gr.update()
+        return *idle, gr.update(), gr.update(), gr.update()
     finally:
         state.set_item("processing", False)
 
@@ -96,18 +103,19 @@ def stop():
 
 
 def clear():
-    return gr.Image(value=None, visible=False), gr.Video(value=None, visible=True)
+    return gr.Image(value=None, visible=False), gr.Video(value=None, visible=True), gr.File(value=None, visible=False)
 
 
 def listen() -> None:
     consent = core.get_component("consent_checkbox")
     start_b, stop_b = core.get_component("start_button"), core.get_component("stop_button")
     out_img, out_vid = core.get_component("output_image"), core.get_component("output_video")
+    out_dl = core.get_component("output_download")
     start_b.click(start, inputs=consent, outputs=[start_b, stop_b], queue=False).success(
-        run, inputs=consent, outputs=[start_b, stop_b, out_img, out_vid],
+        run, inputs=consent, outputs=[start_b, stop_b, out_img, out_vid, out_dl],
         concurrency_limit=1, concurrency_id="gpu")
     stop_b.click(stop, outputs=[start_b, stop_b], queue=False)
-    core.get_component("clear_button").click(clear, outputs=[out_img, out_vid], queue=False)
+    core.get_component("clear_button").click(clear, outputs=[out_img, out_vid, out_dl], queue=False)
 
     term = core.get_component("terminal_textbox")
     core.get_component("terminal_timer").tick(state.read_logs, outputs=term, queue=False,
