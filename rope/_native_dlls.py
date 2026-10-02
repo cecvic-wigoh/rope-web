@@ -72,6 +72,8 @@ def ensure_native_dll_search_path() -> list[str]:
         return []
     _BOOTSTRAPPED = True
 
+    if sys.platform.startswith('linux'):
+        return _preload_linux_tensorrt()
     if sys.platform != 'win32':
         return []
 
@@ -103,3 +105,32 @@ def ensure_native_dll_search_path() -> list[str]:
               + ', '.join(os.path.basename(p) for p in added))
 
     return added
+
+
+def _preload_linux_tensorrt() -> list[str]:
+    """Linux counterpart of add_dll_directory: ORT's TensorRT provider
+    dlopens libnvinfer.so.10 / libnvonnxparser.so.10 by soname, which the
+    pip `tensorrt_libs` package doesn't put on the loader path. Loading
+    them RTLD_GLOBAL first makes those lookups resolve without needing
+    LD_LIBRARY_PATH set before Python starts."""
+    import ctypes
+    import glob
+
+    try:
+        mod = importlib.import_module('tensorrt_libs')
+    except ImportError:
+        return []
+    pkg_dir = os.path.dirname(mod.__file__)
+    loaded: list[str] = []
+    for pattern in ('libnvinfer.so.*', 'libnvinfer_plugin.so.*', 'libnvonnxparser.so.*'):
+        for path in sorted(glob.glob(os.path.join(pkg_dir, pattern))):
+            if path.endswith(('.so.10', '.so.11')) or path.count('.so.') == 1:
+                try:
+                    ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                    loaded.append(os.path.basename(path))
+                    break
+                except OSError:
+                    continue
+    if loaded:
+        print('[rope] preloaded TensorRT: ' + ', '.join(loaded))
+    return loaded
