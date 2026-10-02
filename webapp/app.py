@@ -22,6 +22,18 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 REQUIRED_MODELS = ["det_10g.onnx", "w600k_r50.onnx", "inswapper_128.fp16.onnx"]
 
 
+def _install_builtin_presets() -> None:
+    """Copy webapp/presets/*.json into the presets folder (never
+    overwriting a preset the user saved under the same name)."""
+    import shutil
+    from rope.qt import paths
+
+    for src in sorted((Path(__file__).parent / "presets").glob("*.json")):
+        dst = paths.presets_dir() / src.name
+        if not dst.exists():
+            shutil.copyfile(src, dst)
+
+
 def _default_backend() -> str:
     try:
         import importlib.util
@@ -59,6 +71,7 @@ def main(argv=None) -> None:
     from webapp.ui import layout, media_utils, state
 
     media_utils.install()
+    _install_builtin_presets()
     state.init_state(args)
     state.capture_stdout()
     missing = [m for m in REQUIRED_MODELS if not (Path(args.models_dir) / m).is_file()]
