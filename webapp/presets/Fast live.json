@@ -1,0 +1,13 @@
+{
+  "SwapperTypeTextSel": "128",
+  "MergeTextSel": "Sph",
+  "StrengthSwitch": false,
+  "StrengthSlider": 100,
+  "LikenessSlider": 110,
+  "HighFidelitySwitch": false,
+  "ColorSwitch": true,
+  "ColorMatchSwitch": true,
+  "RestorerSwitch": false,
+  "ThreadsSlider": 4,
+  "ModelSessionsTextSel": "Shared"
+}

@@ -72,7 +72,7 @@ desktop.ini
 .DS_Store
 
 # User config (see rope/qt/paths.py)
-presets/
+/presets/
 user.qss
 data.json.tmp
 outputs/

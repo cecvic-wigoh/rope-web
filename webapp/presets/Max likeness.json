@@ -1,0 +1,18 @@
+{
+  "SwapperTypeTextSel": "256",
+  "MergeTextSel": "Sph",
+  "StrengthSwitch": true,
+  "StrengthSlider": 200,
+  "LikenessSlider": 115,
+  "EmbExtrapSlider": 0,
+  "HighFidelitySwitch": true,
+  "HighFidelityAlphaSlider": 50,
+  "HighFidelityModeTextSel": "Cached",
+  "ColorSwitch": true,
+  "ColorMatchSwitch": true,
+  "RestorerSwitch": false,
+  "ThresholdSlider": 55,
+  "ThreadsSlider": 4,
+  "ModelSessionsTextSel": "Shared",
+  "VideoQualSlider": 16
+}
