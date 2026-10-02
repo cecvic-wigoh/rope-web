@@ -143,22 +143,29 @@ def _live_producer(out: queue.Queue, target: str, start: int, end: int | None,
             stride = [1]
             next_idx = start  # next source frame due in the output
             probe: list[tuple[int, np.ndarray]] = []
-            probe_len = max(6, int(fps * 0.5))
+            probe_len = max(8, int(fps * 0.6))
+            warmup = 3  # first frames include one-off setup; keep them out of the rate
             t0 = time.time()
             frames = eng.iter_swapped_frames(src, start, end, max_size=max_size,
                                              cancel=LIVE_CANCEL, stride=lambda: stride[0])
             for idx, frame in frames:
                 if enc is None:
                     probe.append((idx, frame))
+                    if len(probe) == warmup:
+                        t0 = time.time()
                     if len(probe) < probe_len:
                         continue
-                    rate = len(probe) / max(time.time() - t0, 1e-6)
-                    stride[0] = int(min(4, max(1, np.ceil(fps / (rate * 0.85)))))
+                    rate = (len(probe) - warmup) / max(time.time() - t0, 1e-6)
+                    # Full frame rate whenever the GPU keeps up (the 2-segment
+                    # pre-buffer absorbs small dips); otherwise every Nth frame.
+                    stride[0] = int(min(4, max(1, np.ceil(fps / (rate * 0.95)))))
                     h, w = frame.shape[:2]
                     enc = media_utils.SegmentEncoder(w, h, fps / stride[0], workdir, source=target,
                                                      start_seconds=start / fps)
-                    state.log(f"Live: GPU swaps {rate:.1f} fps — playing "
-                              f"{fps / stride[0]:.0f} of {fps:.0f} fps", replace_prefix="Live:")
+                    state.log(f"Live playback: GPU swaps {rate:.1f} fps — playing "
+                              f"{fps / stride[0]:.0f} of {fps:.0f} fps"
+                              + ("" if stride[0] == 1 else " (lower Preview resolution or use "
+                                 "'Fast live' preset for full frame rate)"))
                     pending = probe
                 else:
                     pending = [(idx, frame)]
