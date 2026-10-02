@@ -162,11 +162,50 @@ def apply_to_engine(eng) -> bool:
         return False
     if src is None:
         return False
-    refs = []
+    refs, others = [], []
     if STATE["face_selector_mode"] == "reference" and STATE["reference_embedding"] is not None:
         refs = [STATE["reference_embedding"]]
-    eng.select_faces(src, mode="reference" if refs else "many", references=refs)
+        if STATE.get("target_path"):
+            scan_target(eng, STATE["target_path"])
+        others = other_people(refs[0])
+    eng.select_faces(src, mode="reference" if refs else "many", references=refs, others=others)
     return True
+
+
+# ----- known faces in the target (for exclusive reference matching) -----------
+
+# Rope similarity scale: 100 identical, 50 unrelated. ArcFace embeddings of
+# the same person typically score 75+, different people 45-62.
+SAME_PERSON = 70.0
+_known_faces: dict[str, list] = {}
+
+
+def remember_faces(target: str, faces) -> None:
+    from rope.engine import cosine_similarity_pct
+
+    known = _known_faces.setdefault(target, [])
+    for f in faces:
+        if all(cosine_similarity_pct(f.embedding, k) < SAME_PERSON for k in known):
+            known.append(f.embedding)
+
+
+def scan_target(eng, target: str) -> None:
+    """One-time scan of frames across the target so people who aren't in
+    the current gallery frame are known too."""
+    if target in _known_faces:
+        return
+    _known_faces[target] = []
+    log("Scanning target for faces…")
+    remember_faces(target, eng.scan_faces(target, samples=12))
+    log(f"Found {len(_known_faces[target])} distinct face(s) in target")
+
+
+def other_people(reference: np.ndarray) -> list:
+    from rope.engine import cosine_similarity_pct
+
+    target = STATE.get("target_path")
+    return [k for k in _known_faces.get(target, [])
+            if cosine_similarity_pct(k, reference) < SAME_PERSON]
 
 
 # ----- terminal log -----------------------------------------------------------

@@ -33,7 +33,9 @@ def update_gallery():
     eng = state.get_engine()
     with eng.lock:
         eng.set_parameters(state.effective_params())
+        state.scan_target(eng, target)
         faces = eng.analyze(rgb)
+    state.remember_faces(target, faces)
     _GALLERY_FACES.extend(faces)
     if faces and state.get_item("reference_embedding") is None:
         state.set_item("reference_embedding", faces[0].embedding)

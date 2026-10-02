@@ -1414,7 +1414,8 @@ class VideoManager():
                 best_sim = -float('inf')
                 best_slot = None
                 for found_face in self.found_faces:
-                    if not found_face.get("SourceFaceAssignments"):
+                    decoy = bool(found_face.get("Decoy"))
+                    if not found_face.get("SourceFaceAssignments") and not decoy:
                         continue  # target-only slot, no source assigned yet
                     if found_face.get("MatchAll"):
                         # Wildcard slot (web UI "many" mode): swap every
@@ -1431,10 +1432,14 @@ class VideoManager():
                         # Malformed embedding on one slot shouldn't abort
                         # the whole frame — skip and keep matching others.
                         continue
-                    if sim >= threshold and sim > best_sim:
+                    # Decoy slots (other known people, web UI "reference"
+                    # mode) compete on raw similarity so a face that is
+                    # closer to someone else is never claimed by the
+                    # reference, even when it clears the threshold.
+                    if (decoy or sim >= threshold) and sim > best_sim:
                         best_sim = sim
                         best_slot = found_face
-                if best_slot is not None:
+                if best_slot is not None and not best_slot.get("Decoy"):
                     s_e = best_slot["AssignedEmbedding"]
                     with nvtx_range("swap_core"):
                         img = self.swap_core(img, fface[0], s_e, parameters, control, slot=best_slot)

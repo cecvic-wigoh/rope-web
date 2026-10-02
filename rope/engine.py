@@ -234,16 +234,20 @@ class RopeEngine:
         return self.dedupe(found)
 
     def select_faces(self, source_emb: np.ndarray, mode: str = "many",
-                     references: Sequence[np.ndarray] = ()) -> None:
+                     references: Sequence[np.ndarray] = (),
+                     others: Sequence[np.ndarray] = ()) -> None:
         """mode 'many': swap every detected face with the source.
-        mode 'reference': swap only faces matching `references` (within
-        ThresholdSlider similarity)."""
+        mode 'reference': swap only faces matching `references`. `others`
+        are embeddings of the other people in the target; a detected face
+        closer to one of them than to a reference is left alone, which
+        keeps similar-looking people from being swapped together."""
         if mode == "reference" and references:
-            self.set_assignments([(r, source_emb) for r in references])
+            self.set_assignments([(r, source_emb) for r in references], decoys=others)
         else:
             self.set_assignments([(None, source_emb)])
 
-    def set_assignments(self, pairs: Sequence[tuple[np.ndarray | None, np.ndarray]]) -> None:
+    def set_assignments(self, pairs: Sequence[tuple[np.ndarray | None, np.ndarray]],
+                        decoys: Sequence[np.ndarray] = ()) -> None:
         """pairs: (target face embedding, source embedding to put on it)."""
         slots = []
         for target_emb, source_emb in pairs:
@@ -257,8 +261,15 @@ class RopeEngine:
                 "HFCorrectionGapSamples": 0,
                 "HFRefinePending": False,
             })
+        for emb in decoys:
+            slots.append({
+                "Decoy": True,
+                "Embedding": np.asarray(emb, dtype=np.float32),
+                "SourceFaceAssignments": [],
+                "AssignedEmbedding": None,
+            })
         self.vm.found_faces = slots
-        sources = [s["AssignedEmbedding"] for s in slots]
+        sources = [s["AssignedEmbedding"] for s in slots if not s.get("Decoy")]
         if sources and hasattr(self.models, "set_session_mean_embedding"):
             self.models.set_session_mean_embedding(np.mean(np.stack(sources), axis=0))
         if hasattr(self.vm, "clear_latent_cache"):

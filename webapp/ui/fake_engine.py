@@ -42,7 +42,7 @@ class FakeEngine:
     def source_embedding(self, paths, merge_mode=None):
         return np.ones(512, dtype=np.float32)
 
-    def select_faces(self, source_emb, mode="many", references=()):
+    def select_faces(self, source_emb, mode="many", references=(), others=()):
         self.mode = mode
 
     def swap_frame(self, rgb, frame_number=0):
